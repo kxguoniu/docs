@@ -299,3 +299,172 @@ def wait_for(fut, timeout, *, loop=None):
     finally:
         timeout_handle.cancel()
 ```
+## future 迭代器
+```python
+def as_completed(fs, *, loop=None, timeout=None):
+	"""
+        for f in as_completed(fs):
+            result = yield from f  # The 'yield from' may raise.
+            # Use result.
+    """
+	# fs 参数必须是一个 future 或者 coroutine 列表
+    if isinstance(fs, futures.Future) or coroutines.iscoroutine(fs):
+        raise TypeError("expect a list of futures, not %s" % type(fs).__name__)
+	# 设置 loop
+    loop = loop if loop is not None else events.get_event_loop()
+	# 任务集合
+    todo = {async(f, loop=loop) for f in set(fs)}
+    from .queues import Queue  # Import here to avoid circular import problem.
+	# 完成的结果队列
+    done = Queue(loop=loop)
+	# 超时对象
+    timeout_handle = None
+	# 超时之后取消所有未完成 future 的回调函数,并清空任务列表,向结果队列里面添加对应的None值
+    def _on_timeout():
+        for f in todo:
+            f.remove_done_callback(_on_completion)
+            done.put_nowait(None)  # Queue a dummy value for _wait_for_one().
+        todo.clear()  # Can't do todo.remove(f) in the loop.
+	# future 完成后把它从任务集合中删除并添加到结果队列中
+    def _on_completion(f):
+        if not todo:
+            return  # _on_timeout() was here first.
+        todo.remove(f)
+        done.put_nowait(f)
+        if not todo and timeout_handle is not None:
+            timeout_handle.cancel()
+	# 迭代器返回的 coroutine 等待结果队列中有完成的 future 结果并返回
+    @coroutine
+    def _wait_for_one():
+        f = yield from done.get()
+        if f is None:
+            # Dummy value from _on_timeout().
+            raise futures.TimeoutError
+        return f.result()  # May raise f.exception().
+	# 为所有的任务 future 添加完成回调
+    for f in todo:
+        f.add_done_callback(_on_completion)
+	# 设置超时调用对象
+    if todo and timeout is not None:
+        timeout_handle = loop.call_later(timeout, _on_timeout)
+	# 迭代器返回一个 coroutine
+    for _ in range(len(todo)):
+        yield _wait_for_one()
+```
+## 异步等待
+```python
+@coroutine
+def sleep(delay, result=None, *, loop=None):
+    # 创建一个 future 对象
+    future = futures.Future(loop=loop)
+	# delay 秒之后调用函数设置 future 的结果为 result 参数
+    h = future._loop.call_later(delay,
+                                future._set_result_unless_cancelled, result)
+	# 等待 future 的完成
+    try:
+        return (yield from future)
+    finally:
+        h.cancel()
+```
+## gather
+gather 是把所有的 future 或者 coroutine 包装在一个 future 里面并把它返回.这个future的结果是一个列表,里面按照顺序排列传递的future 或者 coroutine 结果
+```python
+def gather(*coros_or_futures, loop=None, return_exceptions=False):
+	# 如果没有给参数,返回一个结果为空列表的 future
+    if not coros_or_futures:
+        outer = futures.Future(loop=loop)
+        outer.set_result([])
+        return outer
+	# 参数-future 字典
+    arg_to_fut = {}
+    for arg in set(coros_or_futures):
+		# 如果参数不是 future,把 coroutine 包装成 task
+        if not isinstance(arg, futures.Future):
+            fut = async(arg, loop=loop)
+            if loop is None:
+                loop = fut._loop
+            # The caller cannot control this future, the "destroy pending task"
+            # warning should not be emitted.
+            fut._log_destroy_pending = False
+		# 如果参数是 future 不需要改变
+        else:
+            fut = arg
+            if loop is None:
+                loop = fut._loop
+            elif fut._loop is not loop:
+                raise ValueError("futures are tied to different event loops")
+        arg_to_fut[arg] = fut
+	# 子任务 future 的列表
+    children = [arg_to_fut[arg] for arg in coros_or_futures]
+	# 子任务 future 的长度
+    nchildren = len(children)
+	# 把所有子任务的 future 装在一个定制的 future 中
+    outer = _GatheringFuture(children, loop=loop)
+	# 完成的数量
+    nfinished = 0
+	# 结果列表
+    results = [None] * nchildren
+	# 子任务 future 完成回调
+    def _done_callback(i, fut):
+        nonlocal nfinished
+		# 如果父 future 已经完成
+        if outer.done():
+            if not fut.cancelled():
+                # Mark exception retrieved.
+                fut.exception()
+            return
+		# 如果 future 是被取消的
+        if fut.cancelled():
+            res = futures.CancelledError()
+            if not return_exceptions:
+                outer.set_exception(res)
+                return
+		# 如果是异常完成
+        elif fut._exception is not None:
+            res = fut.exception()  # Mark exception retrieved.
+            if not return_exceptions:
+                outer.set_exception(res)
+                return
+        else:
+            res = fut._result
+		# 第i个future的结果
+        results[i] = res
+		# 完成的future个数增加1
+        nfinished += 1
+		# 如果 future 全部已完成,设置结果
+        if nfinished == nchildren:
+            outer.set_result(results)
+	# 循环子任务 future 设置完成回调函数
+    for i, fut in enumerate(children):
+        fut.add_done_callback(functools.partial(_done_callback, i))
+    return outer
+```
+## 调度
+```python
+def shield(arg, *, loop=None):
+    inner = async(arg, loop=loop)
+    if inner.done():
+        # Shortcut.
+        return inner
+    loop = inner._loop
+    outer = futures.Future(loop=loop)
+
+    def _done_callback(inner):
+        if outer.cancelled():
+            if not inner.cancelled():
+                # Mark inner's result as retrieved.
+                inner.exception()
+            return
+
+        if inner.cancelled():
+            outer.cancel()
+        else:
+            exc = inner.exception()
+            if exc is not None:
+                outer.set_exception(exc)
+            else:
+                outer.set_result(inner.result())
+
+    inner.add_done_callback(_done_callback)
+    return outer
+```

@@ -94,7 +94,7 @@ def _step(self, value=None, exc=None):
 		# 协程的下一步
 		else:
 			result = next(coro)
-	# 迭代完成设置 task 结果，任务结束
+	# 迭代完成设置 task 结果，任务结束，会把return的结果放在异常的 value 属性中
 	except StopIteration as exc:
 		self.set_result(exc.value)
 	# 协程被取消，取消任务

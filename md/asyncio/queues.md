@@ -169,6 +169,7 @@ class LifoQueue(Queue):
         return self._queue.pop()
 ```
 ## JoinableQueue
+这个队列和线程一样实现了`join`方法，线程的`join`方法阻塞程序到线程结束。而这个队列实现的`join`方法则是阻塞程序直到队列中的任务全部完成。
 ```python
 class JoinableQueue(Queue):
     def __init__(self, maxsize=0, *, loop=None):
@@ -178,28 +179,23 @@ class JoinableQueue(Queue):
         self._finished = locks.Event(loop=self._loop)
         self._finished.set()
 
-    def _format(self):
-        result = Queue._format(self)
-        if self._unfinished_tasks:
-            result += ' tasks={}'.format(self._unfinished_tasks)
-        return result
 	# 向队列中添加一项数据，并把队列中未完成的任务数量增加1
     def _put(self, item):
         super()._put(item)
         self._unfinished_tasks += 1
         self._finished.clear()
 
+	# 当一个程序从队列中获取一个任务并完成后需要调用队列的 task_done() 方法，告诉队列获取的任务已经完成，队列会把未完成的任务计数器减一，当计数器为0时，会解除对调用 join() 方法程序的阻塞。
     def task_done(self):
-        # 当一个 get() 完成后调用 task_done() 告诉队列完成了一个任务，队列会把未完成的任务数量减一，当队列中未完成的数量为0时，解除调用 join() 任务的阻塞
         if self._unfinished_tasks <= 0:
             raise ValueError('task_done() called too many times')
         self._unfinished_tasks -= 1
         if self._unfinished_tasks == 0:
             self._finished.set()
 
+	# 调用后 join() 方法后，阻塞程序直到队列中所有的任务都完成。
     @coroutine
     def join(self):
-        # 阻塞，直到队列中未完成的任务数量为0
         if self._unfinished_tasks > 0:
             yield from self._finished.wait()
 ```

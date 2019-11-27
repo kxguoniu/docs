@@ -4,17 +4,15 @@
 ### 初始化
 ```python
 class Handle:
-	# 允许修改的属性
     __slots__ = ('_callback', '_args', '_cancelled', '_loop',
                  '_source_traceback', '_repr', '__weakref__')
-
     def __init__(self, callback, args, loop):
-		# 回调函数不能是一个 Handle 对象
         assert not isinstance(callback, Handle), 'A Handle is not a callback'
         self._loop = loop
         self._callback = callback
         self._args = args
-		# 如果已经取消则为真
+
+		# 如果已经取消则设置为真
         self._cancelled = False
         self._repr = None
         if self._loop.get_debug():
@@ -25,21 +23,14 @@ class Handle:
 ### 取消和运行
 ```python
 def cancel(self):
-	# 没有被取消
 	if not self._cancelled:
-		# 设置取消状态为 True
 		self._cancelled = True
 		if self._loop.get_debug():
-			# Keep a representation in debug mode to keep callback and
-			# parameters. For example, to log the warning
-			# "Executing <Handle...> took 2.5 second"
 			self._repr = repr(self)
-		# 重置回调函数和其参数
 		self._callback = None
 		self._args = None
 
 def _run(self):
-	# 尝试调用回调函数
 	try:
 		self._callback(*self._args)
 	except Exception as exc:
@@ -58,7 +49,6 @@ def _run(self):
 ```
 ## TimerHandle
 注册定时回调方法返回的对象
-### 代码
 ```python
 class TimerHandle(Handle):
     __slots__ = ['_scheduled', '_when']

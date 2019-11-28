@@ -109,37 +109,40 @@ class TimerHandle(Handle):
 ### AbstractEventLoopPolicy
 ## 基础事件循环策略
 在这个策略中，每个线程都有自己的事件循环。但是，默认情况下我们只会为主线程自动创建一个事件循环;其他线程在默认情况下没有事件循环。
+### 初始化
 ```python
 class BaseDefaultEventLoopPolicy(AbstractEventLoopPolicy):
 	# 其应该是一个可调用对象,返回值是一个 event loop
     _loop_factory = None
 	# 线程全局变量,每个线程都可以使用,但线程之间的数据互不影响
     class _Local(threading.local):
-        _loop = None
-        _set_called = False
+        _loop = None		# 当前线程的 loop
+        _set_called = False # 标识 loop 是否已设置
 
     def __init__(self):
         self._local = self._Local()
+```
+### 获取/设置/新建 event loop
+```python
+def get_event_loop(self):
+	# 如果是主线程并且没有设置 loop
+	if (self._local._loop is None and
+		not self._local._set_called and
+		isinstance(threading.current_thread(), threading._MainThread)):
+		self.set_event_loop(self.new_event_loop())
+	if self._local._loop is None:
+		raise RuntimeError('There is no current event loop in thread %r.'
+						   % threading.current_thread().name)
+	return self._local._loop
 
-    def get_event_loop(self):
-		# 如果没有 loop 并且设置状态 False,且该线程是主线程,设置一个loop
-        if (self._local._loop is None and
-            not self._local._set_called and
-            isinstance(threading.current_thread(), threading._MainThread)):
-            self.set_event_loop(self.new_event_loop())
-        if self._local._loop is None:
-            raise RuntimeError('There is no current event loop in thread %r.'
-                               % threading.current_thread().name)
-		# 返回当前线程的 event loop
-        return self._local._loop
-	# 设置当前线程的 event_loop
-    def set_event_loop(self, loop):
-        self._local._set_called = True
-        assert loop is None or isinstance(loop, AbstractEventLoop)
-        self._local._loop = loop
-	# 从 loop_factory 里面获取一个 event loop
-    def new_event_loop(self):
-        return self._loop_factory()
+# 设置当前线程的 event_loop
+def set_event_loop(self, loop):
+	self._local._set_called = True
+	assert loop is None or isinstance(loop, AbstractEventLoop)
+	self._local._loop = loop
+# 从 loop_factory 里面获取一个 event loop 对象
+def new_event_loop(self):
+	return self._loop_factory()
 ```
 ## 文件内函数
 ```python

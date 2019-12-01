@@ -1,3 +1,4 @@
+[TOC]
 # asyncio 之 futures.py
 # head
 文件主要实现了一个 Future 类和一个 wrap_future 方法
@@ -5,7 +6,7 @@ Future 类中主要的方法有 设置结果、设置异常、获取结果、获
 wrap_future 方法主要作用是把其他模块的 future 对象关联到当前模块的 future 对象上，实现 future 对象之间的状态和内容同步。
 ## 文件内常量
 文件开头定义了三种 future 状态常量。分别是待执行、已取消、已完成。
-三种异常分别是基础异常、取消异常、超时异常。还有一个判断协程的方法。
+三种异常分别是取消异常、操作异常、超时异常。还有一个判断 future 的方法。
 ```python
 _PENDING = base_futures._PENDING
 _CANCELLED = base_futures._CANCELLED
@@ -18,7 +19,7 @@ isfuture = base_futures.isfuture
 
 STACK_DEBUG = logging.DEBUG - 1  # heavy-duty debugging
 ```
-## Future 类
+## class Future
 ### 类变量
 实例初始化的时候的默认值
 ```python
@@ -30,11 +31,13 @@ class Future:
     _source_traceback = None
 	# 使用 yield from future 或者 await future 的时候这个状态会设置为True表示 future 被阻塞。
     _asyncio_future_blocking = False
-	# 如果这个属性为真，当future被销毁时会记录没有被调用的信息
+	# 这个属性在给future设置异常的时候被设置为True
+	# 如果在future销毁之前协程没有调用future对象的 result 或者 exception 方法
+	# 也就是没有使用future的结果，则会记录异常
     _log_traceback = False
 ```
 ### 实例初始化
-future 实例初始化除了默认的类变量还有一个可调用对象列表的属性。这个列表中的对象会在 future 取消或者完成之后依次调用。
+`future`实例初始化除了默认的类变量还有一个可调用对象列表的属性。这个列表中的对象会在 future 取消或者完成之后依次调用。
 ```python
 def __init__(self, *, loop=None):
 	if loop is None:
@@ -46,7 +49,7 @@ def __init__(self, *, loop=None):
 		self._source_traceback = format_helpers.extract_stack(sys._getframe(1))
 ```
 ### 删除 future
-当`future`的`__log_traceback`为真时需要记录异常信息
+当`future`的`__log_traceback`为真时记录异常信息
 ```python
 def __del__(self):
 	if not self.__log_traceback:
@@ -62,7 +65,7 @@ def __del__(self):
 		context['source_traceback'] = self._source_traceback
 	self._loop.call_exception_handler(context)
 ```
-### 设置 __log_traceback
+### set __log_traceback
 只能把`__log_traceback`属性设置为False，让 future 在被销毁时不记录日志
 ```python
 @property
@@ -79,6 +82,7 @@ def _log_traceback(self, val):
 把 future 对象的状态设置为取消并依次执行回调函数列表中的对象。
 ```python
 def cancel(self):
+	# future 被取消，销毁时不记录异常
 	self.__log_traceback = False
 	if self._state != _PENDING:
 		return False
@@ -108,13 +112,14 @@ def done(self):
 	return self._state != _PENDING
 ```
 ### 获取 future 的结果
-如果 future 关联的任务执行结束返回任务的结果，如果执行过程中出现了异常则抛出异常信息。
+如果`future`关联的任务执行结束则返回其结果，如果有异常信息则抛出
 ```python
 def result(self):
 	if self._state == _CANCELLED:
 		raise CancelledError
 	if self._state != _FINISHED:
 		raise InvalidStateError('Result is not ready.')
+	# future 的结果已被使用，删除时不记录异常
 	self.__log_traceback = False
 	# 如果有异常信息则抛出异常信息
 	if self._exception is not None:
@@ -122,18 +127,19 @@ def result(self):
 	return self._result
 ```
 ### 获取 future 的异常信息
-future 完成后获取产生的异常信息，这个与获取结果不同，获取结果是抛出异常信息。
+`future`完成后获取产生的异常信息，这个与获取结果不同，获取结果是抛出异常信息。
 ```python
 def exception(self):
 	if self._state == _CANCELLED:
 		raise CancelledError
 	if self._state != _FINISHED:
 		raise InvalidStateError('Exception is not set.')
+	# future 异常被使用，删除时不记录异常
 	self.__log_traceback = False
 	return self._exception
 ```
 ### 添加回调对象
-给 future 添加回调对象，如果future已经完成则立刻执行。
+给`future`添加回调函数，如果`future`已经完成则立刻执行回调函数。
 ```python
 def add_done_callback(self, fn, *, context=None):
 	if self._state != _PENDING:
@@ -144,7 +150,7 @@ def add_done_callback(self, fn, *, context=None):
 		self._callbacks.append((fn, context))
 ```
 ### 删除回调对象
-删除 future 回调列表中的回调对象并返回删除的数量
+删除`future`回调列表中的回调函数并返回删除的数量
 ```python
 def remove_done_callback(self, fn):
 	filtered_callbacks = [f for f in self._callbacks if f != fn]
@@ -154,7 +160,7 @@ def remove_done_callback(self, fn):
 	return removed_count
 ```
 ### 设置 future 结果
-future 关联的任务已经完成，给future设置结果，更新状态，依次执行回调对象
+`future`关联的任务已经完成，给`future`设置结果，更新状态，依次执行回调对象
 ```python
 def set_result(self, result):
 	if self._state != _PENDING:
@@ -177,6 +183,7 @@ def set_exception(self, exception):
 	self._exception = exception
 	self._state = _FINISHED
 	self.__schedule_callbacks()
+	# 协程执行出现了异常，如果这个异常没有被消费，则在删除future时记录信息
 	self.__log_traceback = True
 ```
 ### yield from or await
@@ -192,7 +199,7 @@ def __await__(self):
 __iter__ = __await__
 ```
 ## 文件内置方法
-### 获取 future 的 loop
+### 获取执行 future 的 loop
 兼容之前的版本
 ```python
 def _get_loop(fut):

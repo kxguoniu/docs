@@ -1,6 +1,6 @@
-# asyncio 之 base_futures.py
-## head
-这个文件中定义了`Future`类中的四种异常，三种状态以及一个判断对象是不是 future 对象的方法。
+[TOC]
+## 摘要
+这个文件中定义了`Future`类中的四种异常，三种状态以及一个判断对象是不是`future`对象的方法。
 ## code
 ```python
 Error = concurrent.futures._base.Error

@@ -1,12 +1,12 @@
 [TOC]
-# asyncio 之 futures.py
-# head
-文件主要实现了一个 Future 类和一个 wrap_future 方法
-Future 类中主要的方法有 设置结果、设置异常、获取结果、获取异常、添加回调函数、删除回调函数、取消future等。
-wrap_future 方法主要作用是把其他模块的 future 对象关联到当前模块的 future 对象上，实现 future 对象之间的状态和内容同步。
+## 摘要
+文件主要实现了一个`Future`类和一个`wrap_future`方法
+`Future`类中主要的方法有 设置结果、设置异常、获取结果、获取异常、添加回调函数、删除回调函数、取消`future`等。
+
+`wrap_future`方法主要作用是把其他模块的`future`对象关联到当前模块的`future`对象上，实现 `future`对象之间的状态和内容同步。
 ## 文件内常量
-文件开头定义了三种 future 状态常量。分别是待执行、已取消、已完成。
-三种异常分别是取消异常、操作异常、超时异常。还有一个判断 future 的方法。
+文件开头定义了三种`future`状态常量。分别是待执行、已取消、已完成。
+三种异常分别是取消异常、操作异常、超时异常。还有一个判断`future`的方法。
 ```python
 _PENDING = base_futures._PENDING
 _CANCELLED = base_futures._CANCELLED

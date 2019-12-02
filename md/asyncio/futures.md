@@ -32,12 +32,11 @@ class Future:
 	# 使用 yield from future 或者 await future 的时候这个状态会设置为True表示 future 被阻塞。
     _asyncio_future_blocking = False
 	# 这个属性在给future设置异常的时候被设置为True
-	# 如果在future销毁之前协程没有调用future对象的 result 或者 exception 方法
-	# 也就是没有使用future的结果，则会记录异常
+	# 如果在future销毁之前协程没有消费future的异常，就会记录信息。
     _log_traceback = False
 ```
 ### 实例初始化
-`future`实例初始化除了默认的类变量还有一个可调用对象列表的属性。这个列表中的对象会在 future 取消或者完成之后依次调用。
+`future`实例初始化除了默认的类变量还有一个可调用对象列表的属性。这个列表中的对象会在`future`取消或者完成之后依次调用。
 ```python
 def __init__(self, *, loop=None):
 	if loop is None:
@@ -66,7 +65,7 @@ def __del__(self):
 	self._loop.call_exception_handler(context)
 ```
 ### set __log_traceback
-只能把`__log_traceback`属性设置为False，让 future 在被销毁时不记录日志
+只能把`__log_traceback`属性设置为`False`，让`future`在被销毁时不记录日志
 ```python
 @property
 def _log_traceback(self):
@@ -79,7 +78,7 @@ def _log_traceback(self, val):
 	self.__log_traceback = False
 ```
 ### 取消 future
-把 future 对象的状态设置为取消并依次执行回调函数列表中的对象。
+把`future`对象的状态设置为取消并依次执行回调函数列表中的对象。
 ```python
 def cancel(self):
 	# future 被取消，销毁时不记录异常
@@ -100,7 +99,7 @@ def __schedule_callbacks(self):
 		self._loop.call_soon(callback, self, context=ctx)
 ```
 ### future 的状态
-获取`future`的`loop`和判断 future 是否取消或者完成
+获取`future`的`loop`和判断`future`是否取消或者完成
 ```python
 def get_loop(self):
 	return self._loop
@@ -119,7 +118,7 @@ def result(self):
 		raise CancelledError
 	if self._state != _FINISHED:
 		raise InvalidStateError('Result is not ready.')
-	# future 的结果已被使用，删除时不记录异常
+	# future 的异常将被使用，删除时不记录异常
 	self.__log_traceback = False
 	# 如果有异常信息则抛出异常信息
 	if self._exception is not None:
@@ -293,8 +292,8 @@ def _chain_future(source, destination):
     source.add_done_callback(_call_set_state)
 ```
 ## 关联 future
-把 concurrent.futures.Future 对象关联到 asyncio 的 future 对象上
-如果新的future被取消旧的future也会被取消，旧的future完成后会把结果和状态复制到新的future上。
+把`concurrent.futures.Future`对象关联到`asyncio`的`future`对象上
+如果目标`future`被取消源`future`也会被取消，源`future`完成后会把结果和状态复制到目标`future`上。
 ```python
 def wrap_future(future, *, loop=None):
     if isfuture(future):

@@ -41,7 +41,7 @@ def __init__(self, coro, *, loop=None):
 		self._log_destroy_pending = False
 		raise TypeError(f"a coroutine was expected, got {coro!r}")
 
-	# 如果中途取消 task 会把这个属性设置为 True
+	# 如果中途取消 task 会把这个属性设置为 True,task的取消不是同步的
 	self._must_cancel = False
 	# task 被停止后等待完成的 future 对象
 	self._fut_waiter = None

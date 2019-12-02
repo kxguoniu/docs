@@ -194,7 +194,7 @@ def __step(self, exc=None):
         self = None  # Needed to break cycles when an exception occurs.
 ```
 ### 唤醒自己
-task 等待的 future 已经完成，调用这个方法，让暂停的 task 继续执行下去。
+`task`等待的`future`已经完成，调用这个方法，让暂停的`task`继续执行下去。
 ```python
 def __wakeup(self, future):
 	try:
@@ -234,54 +234,8 @@ async def wait(fs, *, loop=None, timeout=None, return_when=ALL_COMPLETED):
     fs = {ensure_future(f, loop=loop) for f in set(fs)}
     return await _wait(fs, timeout, return_when, loop)
 ```
-#### def _wait
-```python
-async def _wait(fs, timeout, return_when, loop):
-    assert fs, 'Set of Futures is empty.'
-	# 创建一个新的future来判断任务是否已经完成
-    waiter = loop.create_future()
-	# 如果超时参数不为None，设置超时回调函数
-    timeout_handle = None
-    if timeout is not None:
-        timeout_handle = loop.call_later(timeout, _release_waiter, waiter)
-    # 任务计数器
-	counter = len(fs)
-
-    def _on_completion(f):
-        nonlocal counter
-		# 任务完成，计数器减一
-        counter -= 1
-		# 满足条件
-        if (counter <= 0 or
-            return_when == FIRST_COMPLETED or
-            return_when == FIRST_EXCEPTION and (not f.cancelled() and
-                                                f.exception() is not None)):
-            if timeout_handle is not None:
-                timeout_handle.cancel()
-            if not waiter.done():
-                waiter.set_result(None)
-	# 为每一个future添加回调函数
-    for f in fs:
-        f.add_done_callback(_on_completion)
-	# 阻塞程序直到满足条件返回
-    try:
-        await waiter
-    finally:
-        if timeout_handle is not None:
-            timeout_handle.cancel()
-        for f in fs:
-            f.remove_done_callback(_on_completion)
-	# 已完成和未完成的任务集合
-    done, pending = set(), set()
-    for f in fs:
-        if f.done():
-            done.add(f)
-        else:
-            pending.add(f)
-    return done, pending
-```
 ### def ensure_future
-确保参数是一个可用的`future`对象或者是一个`coroutine`对象
+如果参数是一个`future`对象则直接返回，如果是一个`coroutine`对象，则包装成`task`返回
 ```python
 def ensure_future(coro_or_future, *, loop=None):
 	# 如果参数是协程对象，把协程包装成一个task并返回
@@ -297,24 +251,15 @@ def ensure_future(coro_or_future, *, loop=None):
         if loop is not None and loop is not futures._get_loop(coro_or_future):
             raise ValueError('loop argument must agree with Future')
         return coro_or_future
+	# 如果对象实现了 __await__ 方法
     elif inspect.isawaitable(coro_or_future):
         return ensure_future(_wrap_awaitable(coro_or_future), loop=loop)
     else:
         raise TypeError('An asyncio.Future, a coroutine or an awaitable is '
                         'required')
-
-@coroutine
-def _wrap_awaitable(awaitable):
-    return (yield from awaitable.__await__())
-```
-
-### def _release_waiter
-```python
-def _release_waiter(waiter, *args):
-    if not waiter.done():
-        waiter.set_result(None)
 ```
 ### def wait_for
+等待一个`future`完成或者执行超时
 ```python
 async def wait_for(fut, timeout, *, loop=None):
     if loop is None:
@@ -356,6 +301,7 @@ async def wait_for(fut, timeout, *, loop=None):
         timeout_handle.cancel()
 ```
 ### def sleep
+异步阻塞
 ```python
 @types.coroutine
 def __sleep0():
@@ -378,6 +324,7 @@ async def sleep(delay, result=None, *, loop=None):
         h.cancel()
 ```
 ## def as_completed
+把一个`future`列表，包装成一个生成器，而通过对生成器的迭代来访问结果，访问`future`的顺序并不是固定的，那个`future`先完成就优先被执行。
 ```python
 def as_completed(fs, *, loop=None, timeout=None):
     """
@@ -431,7 +378,8 @@ def as_completed(fs, *, loop=None, timeout=None):
         yield _wait_for_one()
 ```
 ## def gather
-gather 是把所有的 future 或者 coroutine 包装在一个 future 里面并把它返回.这个future的结果是一个列表,里面按照顺序排列传递的future 或者 coroutine 结果
+`gather`方法是把所有的`future`或者`coroutine`包装在一个`future`里面并把它返回.这个future的结果是一个列表,里面按照顺序排列传递的`future`或者`coroutine`结果.
+简单来说就是同时等待多个`future`完成，他们的结果是有序的。
 ```python
 def gather(*coros_or_futures, loop=None, return_exceptions=False):
     # 如果参数为空，返回一个结果为空列表的future
@@ -510,6 +458,7 @@ def gather(*coros_or_futures, loop=None, return_exceptions=False):
     return outer
 ```
 ## def shield
+把`future`再包装一层，不知道为啥。
 ```python
 def shield(arg, *, loop=None):
     inner = ensure_future(arg, loop=loop)
@@ -565,34 +514,137 @@ def run_coroutine_threadsafe(coro, loop):
     loop.call_soon_threadsafe(callback)
     return future
 ```
-## 文件内置方法
+## 文件内置属性和方法
+### 内置属性
 ```python
-# 所有loop的task对象都在这个弱引用集合里面
 _all_tasks = weakref.WeakSet()
-# loop与其正在执行的task的字典
 _current_tasks = {}
+```
+### def _release_waiter
+```python
+def _release_waiter(waiter, *args):
+    if not waiter.done():
+        waiter.set_result(None)
+```
+### def _wait
+`wait`方法的帮助方法
+```python
+async def _wait(fs, timeout, return_when, loop):
+    assert fs, 'Set of Futures is empty.'
+	# 创建一个新的future来判断任务是否已经完成
+    waiter = loop.create_future()
+	# 如果超时参数不为None，设置超时回调函数
+    timeout_handle = None
+    if timeout is not None:
+        timeout_handle = loop.call_later(timeout, _release_waiter, waiter)
+    # 任务计数器
+	counter = len(fs)
 
-# 注册 task
+    def _on_completion(f):
+        nonlocal counter
+		# 任务完成，计数器减一
+        counter -= 1
+		# 满足条件
+        if (counter <= 0 or
+            return_when == FIRST_COMPLETED or
+            return_when == FIRST_EXCEPTION and (not f.cancelled() and
+                                                f.exception() is not None)):
+            if timeout_handle is not None:
+                timeout_handle.cancel()
+            if not waiter.done():
+                waiter.set_result(None)
+	# 为每一个future添加回调函数
+    for f in fs:
+        f.add_done_callback(_on_completion)
+	# 阻塞程序直到满足条件返回
+    try:
+        await waiter
+    finally:
+        if timeout_handle is not None:
+            timeout_handle.cancel()
+        for f in fs:
+            f.remove_done_callback(_on_completion)
+	# 已完成和未完成的任务集合
+    done, pending = set(), set()
+    for f in fs:
+        if f.done():
+            done.add(f)
+        else:
+            pending.add(f)
+    return done, pending
+```
+### def _cancel_and_wait
+```python
+async def _cancel_and_wait(fut, loop):
+    waiter = loop.create_future()
+    cb = functools.partial(_release_waiter, waiter)
+    fut.add_done_callback(cb)
+
+    try:
+        fut.cancel()
+        # We cannot wait on *fut* directly to make
+        # sure _cancel_and_wait itself is reliably cancellable.
+        await waiter
+    finally:
+        fut.remove_done_callback(cb)
+```
+### def _wrap_awaitable
+```python
+@coroutine
+def _wrap_awaitable(awaitable):
+    return (yield from awaitable.__await__())
+```
+### class _GatheringFuture
+```python
+class _GatheringFuture(futures.Future):
+    def __init__(self, children, *, loop=None):
+        super().__init__(loop=loop)
+        self._children = children
+        self._cancel_requested = False
+
+    def cancel(self):
+        if self.done():
+            return False
+        ret = False
+        for child in self._children:
+            if child.cancel():
+                ret = True
+        if ret:
+            # If any child tasks were actually cancelled, we should
+            # propagate the cancellation request regardless of
+            # *return_exceptions* argument.  See issue 32684.
+            self._cancel_requested = True
+        return ret
+```
+### def _register_task
+注册`task`
+```python
 def _register_task(task):
     _all_tasks.add(task)
-
-# 进入task
+```
+### def _enter_task
+进入`task`
+```python
 def _enter_task(loop, task):
     current_task = _current_tasks.get(loop)
     if current_task is not None:
         raise RuntimeError(f"Cannot enter into task {task!r} while another "
                            f"task {current_task!r} is being executed.")
     _current_tasks[loop] = task
-
-# 退出task
+```
+### def _leave_task
+退出`task`
+```python
 def _leave_task(loop, task):
     current_task = _current_tasks.get(loop)
     if current_task is not task:
         raise RuntimeError(f"Leaving task {task!r} does not match "
                            f"the current task {current_task!r}.")
     del _current_tasks[loop]
-
-# 取消task的注册
+```
+### def _unregister_task
+取消`task`的注册
+```python
 def _unregister_task(task):
     _all_tasks.discard(task)
 ```

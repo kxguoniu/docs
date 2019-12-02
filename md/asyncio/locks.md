@@ -1,3 +1,4 @@
+[TOC]
 # asyncio 之 locks.py
 ## 上下文管理器
 进入的时候什么都不做，退出的时候释放锁。
@@ -20,7 +21,7 @@ class _ContextManager:
         finally:
             self._lock = None  # Crudely prevent reuse.
 ```
-## Lock
+## class Lock
 ### 初始化
 ```python
 class Lock(_ContextManagerMixin):

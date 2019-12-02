@@ -1,9 +1,10 @@
+[TOC]
 # asyncio 之 queues.py
-## Queue
+## class Queue
 ### 初始化队列
-队列初始化的时候会创建 getters 队列、putters 队列和 queue 数据队列
-当 queue 为空时，所有的 get 操作都会放在 getters 队列中等待 put 操作。
-当 queue 为满时，所有的 put 操作都会放在 putters 队列中等待 get 操作。
+队列初始化的时候会创建`getters`队列、`putters`队列和`queue`数据队列
+当`queue`为空时，所有的`get`操作都会放在`getters`队列中等待`put`操作。
+当`queue`为满时，所有的`put`操作都会放在`putters`队列中等待`get`操作。
 ```python
 def __init__(self, maxsize=0, *, loop=None):
 	if loop is None:
@@ -135,7 +136,7 @@ def get_nowait(self):
 	return item
 ```
 ### def task_done
-当一个程序从队列中获取一个任务并完成后需要调用队列的 task_done() 方法，告诉队列获取的任务已经完成，队列会把未完成的任务计数器减一，当计数器为0时，会解除对调用 join() 方法程序的阻塞。
+当一个程序从队列中获取一个任务并完成后需要调用队列的`task_done`方法，告诉队列获取的任务已经完成，队列会把未完成的任务计数器减一，当计数器为0时，会解除对调用`join`方法程序的阻塞。
 ```python
 def task_done(self):
 	if self._unfinished_tasks <= 0:
@@ -145,13 +146,13 @@ def task_done(self):
 		self._finished.set()
 ```
 ### def join
-调用后 join() 方法后，阻塞程序直到队列中所有的任务都完成。
+调用后`join`方法后，阻塞程序直到队列中所有的任务都完成。
 ```python
 async def join(self):
 	if self._unfinished_tasks > 0:
 		await self._finished.wait()
 ```
-## PriorityQueue
+## class PriorityQueue
 ```python
 class PriorityQueue(Queue):
     def _init(self, maxsize):
@@ -163,7 +164,7 @@ class PriorityQueue(Queue):
     def _get(self, heappop=heapq.heappop):
         return heappop(self._queue)
 ```
-## LifoQueue
+## class LifoQueue
 ```python
 class LifoQueue(Queue):
     def _init(self, maxsize):

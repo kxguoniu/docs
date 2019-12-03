@@ -1,8 +1,7 @@
-# asyncio 之 tasks.py
-[toc]
+[TOC]
 ## 摘要
 在`asyncio`中每一个协程都会被包装成一个`task`。协程作为一个可迭代对象保存在`task`的属性中。
-而`task`会借助`loop`无限循环自己的`_setup`方法。每一次`_setup`的执行都是对协程的一次迭代，如果协程的迭代结果是一个`future`，`_setup`会等待`future`完成后继续执行。当协程迭代结束之后`_setup`会把协程返回的结果放在`task`属性中，并结束无限循环。
+而`task`会借助`loop`循环自己的`_setup`方法。每一次`_setup`的执行都是对协程的一次迭代，如果协程的迭代结果是一个`future`，`_setup`会等待`future`完成后继续执行。当协程迭代结束之后`_setup`会把协程返回的结果放在`task`属性中，并结束循环。
 ## class Task
 ### 类属性
 如果设置为`False`，当`task`被销毁时如果`task`状态为`pending`则不会记录日志
@@ -76,8 +75,8 @@ def set_exception(self, exception):
 ```
 ### 获取task的堆栈列表
 ```python
-    def get_stack(self, *, limit=None):
-        return base_tasks._task_get_stack(self, limit)
+def get_stack(self, *, limit=None):
+	return base_tasks._task_get_stack(self, limit)
 ```
 ### 打印task的堆栈或者回溯信息
 ```python
@@ -206,14 +205,148 @@ def __wakeup(self, future):
 		self.__step()
 	self = None  # Needed to break cycles when an exception occurs.
 ```
+## 文件内置属性和方法
+### 内置属性
+```python
+_all_tasks = weakref.WeakSet()
+_current_tasks = {}
+```
+### def _release_waiter
+```python
+def _release_waiter(waiter, *args):
+    if not waiter.done():
+        waiter.set_result(None)
+```
+### async def _wait
+`wait`方法的帮助方法
+```python
+async def _wait(fs, timeout, return_when, loop):
+    assert fs, 'Set of Futures is empty.'
+	# 创建一个新的future来判断任务是否已经完成
+    waiter = loop.create_future()
+	# 如果超时参数不为None，设置超时回调函数
+    timeout_handle = None
+    if timeout is not None:
+        timeout_handle = loop.call_later(timeout, _release_waiter, waiter)
+    # 任务计数器
+	counter = len(fs)
+
+    def _on_completion(f):
+        nonlocal counter
+		# 任务完成，计数器减一
+        counter -= 1
+		# 满足条件
+        if (counter <= 0 or
+            return_when == FIRST_COMPLETED or
+            return_when == FIRST_EXCEPTION and (not f.cancelled() and
+                                                f.exception() is not None)):
+            if timeout_handle is not None:
+                timeout_handle.cancel()
+            if not waiter.done():
+                waiter.set_result(None)
+	# 为每一个future添加回调函数
+    for f in fs:
+        f.add_done_callback(_on_completion)
+	# 阻塞程序直到满足条件返回
+    try:
+        await waiter
+    finally:
+        if timeout_handle is not None:
+            timeout_handle.cancel()
+        for f in fs:
+            f.remove_done_callback(_on_completion)
+	# 已完成和未完成的任务集合
+    done, pending = set(), set()
+    for f in fs:
+        if f.done():
+            done.add(f)
+        else:
+            pending.add(f)
+    return done, pending
+```
+### async def _cancel_and_wait
+```python
+async def _cancel_and_wait(fut, loop):
+    waiter = loop.create_future()
+    cb = functools.partial(_release_waiter, waiter)
+    fut.add_done_callback(cb)
+
+    try:
+        fut.cancel()
+        # We cannot wait on *fut* directly to make
+        # sure _cancel_and_wait itself is reliably cancellable.
+        await waiter
+    finally:
+        fut.remove_done_callback(cb)
+```
+### @coroutine def _wrap_awaitable
+```python
+@coroutine
+def _wrap_awaitable(awaitable):
+    return (yield from awaitable.__await__())
+```
+### class _GatheringFuture
+```python
+class _GatheringFuture(futures.Future):
+    def __init__(self, children, *, loop=None):
+        super().__init__(loop=loop)
+        self._children = children
+        self._cancel_requested = False
+
+    def cancel(self):
+        if self.done():
+            return False
+        ret = False
+        for child in self._children:
+            if child.cancel():
+                ret = True
+        if ret:
+            # If any child tasks were actually cancelled, we should
+            # propagate the cancellation request regardless of
+            # *return_exceptions* argument.  See issue 32684.
+            self._cancel_requested = True
+        return ret
+```
+### def _register_task
+注册`task`
+```python
+def _register_task(task):
+    _all_tasks.add(task)
+```
+### def _enter_task
+进入`task`
+```python
+def _enter_task(loop, task):
+    current_task = _current_tasks.get(loop)
+    if current_task is not None:
+        raise RuntimeError(f"Cannot enter into task {task!r} while another "
+                           f"task {current_task!r} is being executed.")
+    _current_tasks[loop] = task
+```
+### def _leave_task
+退出`task`
+```python
+def _leave_task(loop, task):
+    current_task = _current_tasks.get(loop)
+    if current_task is not task:
+        raise RuntimeError(f"Leaving task {task!r} does not match "
+                           f"the current task {current_task!r}.")
+    del _current_tasks[loop]
+```
+### def _unregister_task
+取消`task`的注册
+```python
+def _unregister_task(task):
+    _all_tasks.discard(task)
+```
 ## 文件内方法
-### 创建task
+### def create_task
 ```python
 def create_task(coro):
     loop = events.get_running_loop()
     return loop.create_task(coro)
 ```
-### def wait
+### async def wait
 该方法参数是一个列表，直到满足特定条件就返回
 ```python
 FIRST_COMPLETED = concurrent.futures.FIRST_COMPLETED	# 只要有一个完成就返回
@@ -258,7 +391,7 @@ def ensure_future(coro_or_future, *, loop=None):
         raise TypeError('An asyncio.Future, a coroutine or an awaitable is '
                         'required')
 ```
-### def wait_for
+### async def wait_for
 等待一个`future`完成或者执行超时
 ```python
 async def wait_for(fut, timeout, *, loop=None):
@@ -300,7 +433,7 @@ async def wait_for(fut, timeout, *, loop=None):
     finally:
         timeout_handle.cancel()
 ```
-### def sleep
+### async def sleep
 异步阻塞
 ```python
 @types.coroutine
@@ -323,7 +456,7 @@ async def sleep(delay, result=None, *, loop=None):
     finally:
         h.cancel()
 ```
-## def as_completed
+### def as_completed
 把一个`future`列表，包装成一个生成器，而通过对生成器的迭代来访问结果，访问`future`的顺序并不是固定的，那个`future`先完成就优先被执行。
 ```python
 def as_completed(fs, *, loop=None, timeout=None):
@@ -377,7 +510,7 @@ def as_completed(fs, *, loop=None, timeout=None):
     for _ in range(len(todo)):
         yield _wait_for_one()
 ```
-## def gather
+### def gather
 `gather`方法是把所有的`future`或者`coroutine`包装在一个`future`里面并把它返回.这个future的结果是一个列表,里面按照顺序排列传递的`future`或者`coroutine`结果.
 简单来说就是同时等待多个`future`完成，他们的结果是有序的。
 ```python
@@ -457,7 +590,7 @@ def gather(*coros_or_futures, loop=None, return_exceptions=False):
     outer = _GatheringFuture(children, loop=loop)
     return outer
 ```
-## def shield
+### def shield
 把`future`再包装一层，不知道为啥。
 ```python
 def shield(arg, *, loop=None):
@@ -495,7 +628,7 @@ def shield(arg, *, loop=None):
     return outer
 ```
 ### def run_coroutine_threadsafe
-将一个协程交给给定的loop执行，返回一个 concurrent.futures.Future 对象用于访问结果。
+将一个协程交给给定的`loop`执行，返回一个`concurrent.futures.Future`对象用于访问结果。
 ```python
 def run_coroutine_threadsafe(coro, loop):
     if not coroutines.iscoroutine(coro):
@@ -513,138 +646,4 @@ def run_coroutine_threadsafe(coro, loop):
 
     loop.call_soon_threadsafe(callback)
     return future
-```
-## 文件内置属性和方法
-### 内置属性
-```python
-_all_tasks = weakref.WeakSet()
-_current_tasks = {}
-```
-### def _release_waiter
-```python
-def _release_waiter(waiter, *args):
-    if not waiter.done():
-        waiter.set_result(None)
-```
-### def _wait
-`wait`方法的帮助方法
-```python
-async def _wait(fs, timeout, return_when, loop):
-    assert fs, 'Set of Futures is empty.'
-	# 创建一个新的future来判断任务是否已经完成
-    waiter = loop.create_future()
-	# 如果超时参数不为None，设置超时回调函数
-    timeout_handle = None
-    if timeout is not None:
-        timeout_handle = loop.call_later(timeout, _release_waiter, waiter)
-    # 任务计数器
-	counter = len(fs)
-
-    def _on_completion(f):
-        nonlocal counter
-		# 任务完成，计数器减一
-        counter -= 1
-		# 满足条件
-        if (counter <= 0 or
-            return_when == FIRST_COMPLETED or
-            return_when == FIRST_EXCEPTION and (not f.cancelled() and
-                                                f.exception() is not None)):
-            if timeout_handle is not None:
-                timeout_handle.cancel()
-            if not waiter.done():
-                waiter.set_result(None)
-	# 为每一个future添加回调函数
-    for f in fs:
-        f.add_done_callback(_on_completion)
-	# 阻塞程序直到满足条件返回
-    try:
-        await waiter
-    finally:
-        if timeout_handle is not None:
-            timeout_handle.cancel()
-        for f in fs:
-            f.remove_done_callback(_on_completion)
-	# 已完成和未完成的任务集合
-    done, pending = set(), set()
-    for f in fs:
-        if f.done():
-            done.add(f)
-        else:
-            pending.add(f)
-    return done, pending
-```
-### def _cancel_and_wait
-```python
-async def _cancel_and_wait(fut, loop):
-    waiter = loop.create_future()
-    cb = functools.partial(_release_waiter, waiter)
-    fut.add_done_callback(cb)
-
-    try:
-        fut.cancel()
-        # We cannot wait on *fut* directly to make
-        # sure _cancel_and_wait itself is reliably cancellable.
-        await waiter
-    finally:
-        fut.remove_done_callback(cb)
-```
-### def _wrap_awaitable
-```python
-@coroutine
-def _wrap_awaitable(awaitable):
-    return (yield from awaitable.__await__())
-```
-### class _GatheringFuture
-```python
-class _GatheringFuture(futures.Future):
-    def __init__(self, children, *, loop=None):
-        super().__init__(loop=loop)
-        self._children = children
-        self._cancel_requested = False
-
-    def cancel(self):
-        if self.done():
-            return False
-        ret = False
-        for child in self._children:
-            if child.cancel():
-                ret = True
-        if ret:
-            # If any child tasks were actually cancelled, we should
-            # propagate the cancellation request regardless of
-            # *return_exceptions* argument.  See issue 32684.
-            self._cancel_requested = True
-        return ret
-```
-### def _register_task
-注册`task`
-```python
-def _register_task(task):
-    _all_tasks.add(task)
-```
-### def _enter_task
-进入`task`
-```python
-def _enter_task(loop, task):
-    current_task = _current_tasks.get(loop)
-    if current_task is not None:
-        raise RuntimeError(f"Cannot enter into task {task!r} while another "
-                           f"task {current_task!r} is being executed.")
-    _current_tasks[loop] = task
-```
-### def _leave_task
-退出`task`
-```python
-def _leave_task(loop, task):
-    current_task = _current_tasks.get(loop)
-    if current_task is not task:
-        raise RuntimeError(f"Leaving task {task!r} does not match "
-                           f"the current task {current_task!r}.")
-    del _current_tasks[loop]
-```
-### def _unregister_task
-取消`task`的注册
-```python
-def _unregister_task(task):
-    _all_tasks.discard(task)
 ```

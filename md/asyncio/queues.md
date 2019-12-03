@@ -1,10 +1,11 @@
 [TOC]
-# asyncio 之 queues.py
+## 摘要
+`queues.py`文件实现了先入先出队列、先入后出队列、优先队列、joinable队列的异步实现。
 ## class Queue
 ### 初始化队列
-队列初始化的时候会创建`getters`队列、`putters`队列和`queue`数据队列
-当`queue`为空时，所有的`get`操作都会放在`getters`队列中等待`put`操作。
-当`queue`为满时，所有的`put`操作都会放在`putters`队列中等待`get`操作。
+- 队列初始化的时候会创建`getters`队列、`putters`队列和`queue`数据队列
+- 当`queue`为空时，所有的`get`操作都会放在`getters`队列中等待`put`操作。
+- 当`queue`为满时，所有的`put`操作都会放在`putters`队列中等待`get`操作。
 ```python
 def __init__(self, maxsize=0, *, loop=None):
 	if loop is None:
@@ -64,7 +65,7 @@ def full(self):
 	else:
 		return self.qsize() >= self._maxsize
 ```
-### def put
+### async def put
 向队列添加数据，如果队列已满，则阻塞到添加完成。
 ```python
 async def put(self, item):
@@ -102,7 +103,7 @@ def put_nowait(self, item):
 	# 尝试唤醒一个被阻塞的获取队列数据的程序
 	self._wakeup_next(self._getters)
 ```
-### def get
+### async def get
 从队列获取数据，如果队列为空，阻塞直到队列有数据。
 ```python
 async def get(self):

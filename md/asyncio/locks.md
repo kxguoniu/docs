@@ -177,7 +177,6 @@ class Event:
 ```
 ## class Condition
 Condition(条件变量)，所有协程调用`wait`方法后都会进入阻塞状态，直到另一个协程调用`notify/notify_all`方法通知，得到通知的协程去尝试获取锁。`Condition`通常与一个锁关联，需要在多个`Contidion`中共享一个锁时，可以传递一个`lock`对象给构造方法，否则会自己创建一个`Lock`实例。
-线程条件变量可以传递`Lock/RLock`实例，默认创建的是`RLock`。因为异步中并没有实现`RLock`。
 ### 初始化
 ```python
 class Condition(_ContextManagerMixin):
@@ -286,8 +285,8 @@ def locked(self):
 	return self._value == 0
 ```
 ### 获取/释放锁
-协程每次获取锁都会让锁的数量减一，当锁的数量为0时协程会被阻塞。
-协程每次释放锁都会让锁的数量加一，并尝试唤醒等待队列里的第一个被阻塞的协程。
+- 协程每次获取锁都会让锁的数量减一，当锁的数量为0时协程会被阻塞。
+- 协程每次释放锁都会让锁的数量加一，并尝试唤醒等待队列里的第一个被阻塞的协程。
 ```python
 async def acquire(self):
 	while self._value <= 0:

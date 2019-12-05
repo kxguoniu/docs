@@ -1,5 +1,6 @@
 [TOC]
 ## 摘要
+`coroutines.py`中定义了那些类型可以作为协程，并实现了一个协程装饰器`coroutine`。此外还有判断一个对象是不是协程的方法`iscoroutine`以及判断一个函数是不是返回协程的方法`iscoroutinefunction`。
 ## 文件内置属性和方法
 ```python
 def _is_debug_mode():

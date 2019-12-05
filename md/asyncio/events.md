@@ -123,7 +123,7 @@ class TimerHandle(Handle):
 ## 抽象事件循环策略
 ### AbstractEventLoopPolicy
 ## 基础事件循环策略
-在这个策略中，每个线程都有自己的事件循环。但是，默认情况下我们只会为主线程自动创建一个事件循环;其他线程在默认情况下没有事件循环。
+在这个策略中，每个线程都有自己的事件循环。但是，默认情况下我们只会为主线程创建一个事件循环;其他线程在默认情况下没有事件循环。
 ### 初始化
 ```python
 class BaseDefaultEventLoopPolicy(AbstractEventLoopPolicy):
@@ -137,67 +137,124 @@ class BaseDefaultEventLoopPolicy(AbstractEventLoopPolicy):
     def __init__(self):
         self._local = self._Local()
 ```
-### 获取/设置/新建 event loop
+### 获取当前线程的 event loop
 ```python
 def get_event_loop(self):
-	# 如果是主线程并且没有设置 loop
+	# 如果当前线程没有 loop，设置一个默认的
 	if (self._local._loop is None and
-		not self._local._set_called and
-		isinstance(threading.current_thread(), threading._MainThread)):
+			not self._local._set_called and
+			isinstance(threading.current_thread(), threading._MainThread)):
 		self.set_event_loop(self.new_event_loop())
+
 	if self._local._loop is None:
 		raise RuntimeError('There is no current event loop in thread %r.'
 						   % threading.current_thread().name)
-	return self._local._loop
 
-# 设置当前线程的 event_loop
+	return self._local._loop
+```
+### 设置当前线程的 event loop
+```python
 def set_event_loop(self, loop):
 	self._local._set_called = True
 	assert loop is None or isinstance(loop, AbstractEventLoop)
 	self._local._loop = loop
-# 从 loop_factory 里面获取一个 event loop 对象
+```
+### 从工厂中创建一个新的 event loop
+```python
 def new_event_loop(self):
 	return self._loop_factory()
 ```
-## 文件内函数
+## 文件内置属性和方法
+### 属性
 ```python
+# 事件循环策略
 _event_loop_policy = None
-# 如果没有设置事件循环策略,给一个默认的事件循环策略
+# 线程同步锁
 _lock = threading.Lock()
+
+class _RunningLoop(threading.local):
+    loop_pid = (None, None)
+# 当前线程正在运行的 event loop
+_running_loop = _RunningLoop()
+```
+### def _get_running_loop
+获取当前线程正在运行的loop，这个函数是在C语言中实现的(_asynciomodule.c)。
+```python
+def _get_running_loop():
+    running_loop, pid = _running_loop.loop_pid
+    if running_loop is not None and pid == os.getpid():
+        return running_loop
+```
+### def _set_running_loop
+设置当前线程正在运行的 loop，在C语言中实现。
+```python
+def _set_running_loop(loop):
+    _running_loop.loop_pid = (loop, os.getpid())
+```
+### def _init_event_loop_policy
+初始化默认循环策略
+```python
 def _init_event_loop_policy():
     global _event_loop_policy
     with _lock:
-        if _event_loop_policy is None:
+        if _event_loop_policy is None:  # pragma: no branch
             from . import DefaultEventLoopPolicy
             _event_loop_policy = DefaultEventLoopPolicy()
-
-# 获取当前的事件循环策略
+```
+## 文件内函数
+### def get_running_loop
+获取当前线程正在运行的loop
+```python
+def get_running_loop():
+    loop = _get_running_loop()
+    if loop is None:
+        raise RuntimeError('no running event loop')
+    return loop
+```
+### def get_event_loop_policy
+获取当前事件循环策略
+```python
 def get_event_loop_policy():
     if _event_loop_policy is None:
         _init_event_loop_policy()
     return _event_loop_policy
-
-# 设置当前的事件循环策略
+```
+### def set_event_loop_policy
+设置当前的事件循环策略
+```python
 def set_event_loop_policy(policy):
     global _event_loop_policy
     assert policy is None or isinstance(policy, AbstractEventLoopPolicy)
     _event_loop_policy = policy
-
-# 获取当前 event_loop
+```
+### def get_event_loop
+获取当前线程正在运行的loop或者从策略中获取loop
+```python
 def get_event_loop():
+    current_loop = _get_running_loop()
+    if current_loop is not None:
+        return current_loop
     return get_event_loop_policy().get_event_loop()
-
-# 设置当前 event_loop
+```
+### def set_event_loop
+调用策略中的设置loop的方法
+```python
 def set_event_loop(loop):
     get_event_loop_policy().set_event_loop(loop)
-
-# 获取新的 event_loop
+```
+### def new_event_loop
+从策略中获取新的loop
+```python
 def new_event_loop():
     return get_event_loop_policy().new_event_loop()
-
+```
+### def get_child_watcher
+```python
 def get_child_watcher():
     return get_event_loop_policy().get_child_watcher()
-
+```
+### def set_child_watcher
+```python
 def set_child_watcher(watcher):
     return get_event_loop_policy().set_child_watcher(watcher)
 ```

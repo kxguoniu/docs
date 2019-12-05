@@ -1,6 +1,6 @@
 [TOC]
 ## 摘要
-`locks.py`定义了`Lock`、`Event`、`Condition`、`Semaphore`、`BoundeSemaphore`的异步实现。
+`locks.py`中定义了`Lock`、`Event`、`Condition`、`Semaphore`、`BoundeSemaphore`的异步实现。
 ## class _ContextManager
 进入的时候什么都不做，退出的时候释放锁。
 ```python

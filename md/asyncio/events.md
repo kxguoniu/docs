@@ -1,7 +1,10 @@
 [TOC]
 ## 摘要
+事件循环策略是各个进程的全局对象 ，它控制事件循环的管理。每个事件循环都有一个默认策略，可以使用策略API更改和定制该策略。
+策略定义了“上下文”的概念，每个上下文管理一个单独的事件循环。默认策略将*context*定义为当前线程。
+通过使用自定义事件循环策略，可以自定义`get_event_loop()`，`set_event_loop()`和`new_event_loop()`函数的行为。
 ## class Handler
-注册回调方法后返回一个`handle`对象。
+注册回调方法后返回一个`handle`对象。`handle`对象会被添加到`loop`的`_ready`队列中。`loop`在执行的时候会从`_ready`队列中取出`handle`对象并调用其`_run`方法。
 ### 初始化
 ```python
 class Handle:
@@ -59,7 +62,7 @@ def _run(self):
 	self = None  # Needed to break cycles when an exception occurs.
 ```
 ## class TimerHandle
-注册定时回调方法后返回一个`timerhandle`对象。
+注册定时回调方法后返回一个`timerhandle`对象。`timerhandle`对象会按照时间的先后插入到`loop`的`_scheduled`列表中。`loop`执行的时候会从列表中取出可以执行的`timerhandle`对象添加到其`_ready`队列中。然后再从`_ready`队列中取出并调用其`_run`方法。
 ```python
 class TimerHandle(Handle):
     __slots__ = ['_scheduled', '_when']
@@ -116,14 +119,14 @@ class TimerHandle(Handle):
     def when(self):
         return self._when
 ```
-## 抽象服务器
-### AbstractServer
-## 抽象事件循环
-### AbstractEventLoop
-## 抽象事件循环策略
-### AbstractEventLoopPolicy
+## 抽象服务器类
+### class AbstractServer
+## 抽象事件循环类
+### class AbstractEventLoop
+## 抽象事件循环策略类
+### class AbstractEventLoopPolicy
 ## 基础事件循环策略
-在这个策略中，每个线程都有自己的事件循环。但是，默认情况下我们只会为主线程创建一个事件循环;其他线程在默认情况下没有事件循环。
+在这个策略中，每个线程都可以有自己的`event loop`。但是，默认情况下我们只允许主线程创建一个`event loop`。
 ### 初始化
 ```python
 class BaseDefaultEventLoopPolicy(AbstractEventLoopPolicy):

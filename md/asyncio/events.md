@@ -1,41 +1,52 @@
-# asyncio 之 events.py
-## Handler
-注册回调方法返回的对象
+[TOC]
+## 摘要
+## class Handler
+注册回调方法后返回一个`handle`对象。
 ### 初始化
 ```python
 class Handle:
     __slots__ = ('_callback', '_args', '_cancelled', '_loop',
-                 '_source_traceback', '_repr', '__weakref__')
-    def __init__(self, callback, args, loop):
-        assert not isinstance(callback, Handle), 'A Handle is not a callback'
+                 '_source_traceback', '_repr', '__weakref__',
+                 '_context')
+    def __init__(self, callback, args, loop, context=None):
+        if context is None:
+            context = contextvars.copy_context()
+        self._context = context
         self._loop = loop
         self._callback = callback
         self._args = args
-
 		# 如果已经取消则设置为真
         self._cancelled = False
         self._repr = None
         if self._loop.get_debug():
-            self._source_traceback = traceback.extract_stack(sys._getframe(1))
+            self._source_traceback = format_helpers.extract_stack(
+                sys._getframe(1))
         else:
             self._source_traceback = None
 ```
-### 取消和运行
+### 取消
 ```python
+def cancelled(self):
+	return self._cancelled
+
 def cancel(self):
 	if not self._cancelled:
 		self._cancelled = True
 		if self._loop.get_debug():
 			self._repr = repr(self)
+		# 回调函数和其参数都设置为None
 		self._callback = None
 		self._args = None
-
+```
+### 运行
+```python
 def _run(self):
 	try:
-		self._callback(*self._args)
+		self._context.run(self._callback, *self._args)
 	except Exception as exc:
-		cb = _format_callback(self._callback, self._args)
-		msg = 'Exception in callback {}'.format(cb)
+		cb = format_helpers._format_callback_source(
+			self._callback, self._args)
+		msg = f'Exception in callback {cb}'
 		context = {
 			'message': msg,
 			'exception': exc,
@@ -45,23 +56,23 @@ def _run(self):
 			context['source_traceback'] = self._source_traceback
 		# 调用异常处理器处理异常
 		self._loop.call_exception_handler(context)
-	self = None
+	self = None  # Needed to break cycles when an exception occurs.
 ```
-## TimerHandle
-注册定时回调方法返回的对象
+## class TimerHandle
+注册定时回调方法后返回一个`timerhandle`对象。
 ```python
 class TimerHandle(Handle):
     __slots__ = ['_scheduled', '_when']
-
-    def __init__(self, when, callback, args, loop):
+    def __init__(self, when, callback, args, loop, context=None):
         assert when is not None
-        super().__init__(callback, args, loop)
+        super().__init__(callback, args, loop, context)
         if self._source_traceback:
             del self._source_traceback[-1]
-		# 在什么时间调用
+		# 什么时候执行
         self._when = when
-		# 在创建时间回调对象之后会把这个属性设置为真
-		# 在对象取消或者执行后会设置为假
+		# 在创建的定时函数的时候这个属性被设置为True
+		# 当timerhandle对象被取消或者被添加到loop的待执行队列中的时候会被设置为False
+		# 表示任务已取消，或者正在准备执行/已执行。
         self._scheduled = False
 
     def __hash__(self):
@@ -95,11 +106,15 @@ class TimerHandle(Handle):
         equal = self.__eq__(other)
         return NotImplemented if equal is NotImplemented else not equal
 
-	# 取消定时任务,把 loop 中取消的时间回调数量增加1
+	# 取消定时任务，把loop中的任务取消数量增加一
     def cancel(self):
         if not self._cancelled:
             self._loop._timer_handle_cancelled(self)
         super().cancel()
+
+	# 返回在什么时候执行回电函数
+    def when(self):
+        return self._when
 ```
 ## 抽象服务器
 ### AbstractServer

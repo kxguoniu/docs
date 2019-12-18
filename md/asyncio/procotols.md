@@ -60,3 +60,48 @@ class BufferedProtocol(BaseProtocol):
     def eof_received(self):
 		#
 ```
+## class DatagramProtocol
+报文协议接口
+```python
+class DatagramProtocol(BaseProtocol):
+    def datagram_received(self, data, addr):
+        # 接受数据时调用
+
+    def error_received(self, exc):
+		# 当发送或者接收出现异常时调用
+```
+## class SubprocessProtocol
+子进程协议接口
+```python
+class SubprocessProtocol(BaseProtocol):
+    def pipe_data_received(self, fd, data):
+		# 当子进程将数据写入管道中调用
+        # 文件描述符与字节数据
+
+    def pipe_connection_lost(self, fd, exc):
+		# 当与子进程关联的文件描述符关闭时调用
+
+    def process_exited(self):
+		# 子进程退出时调用
+```
+## def _feed_data_to_buffered_proto
+使用缓冲区协议发送数据
+```python
+def _feed_data_to_buffered_proto(proto, data):
+    data_len = len(data)
+    while data_len:
+        buf = proto.get_buffer(data_len)
+        buf_len = len(buf)
+        if not buf_len:
+            raise RuntimeError('get_buffer() returned an empty buffer')
+
+        if buf_len >= data_len:
+            buf[:data_len] = data
+            proto.buffer_updated(data_len)
+            return
+        else:
+            buf[:buf_len] = data[:buf_len]
+            proto.buffer_updated(buf_len)
+            data = data[buf_len:]
+            data_len = len(data)
+```

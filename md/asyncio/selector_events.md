@@ -120,11 +120,7 @@ def _read_from_self(self):
 向自己发送数据
 ```python
 def _write_to_self(self):
-	# This may be called from a different thread, possibly after
-	# _close_self_pipe() has been called or even while it is
-	# running.  Guard for self._csock being None or closed.  When
-	# a socket is closed, send() raises OSError (with errno set to
-	# EBADF, but let's not rely on the exact error code).
+	# 可能在不同的线程中调用，可能时正在关闭过程中调用，如果发送数据的时候连接已经关闭，会引发异常。
 	csock = self._csock
 	if csock is not None:
 		try:
@@ -144,6 +140,166 @@ def _start_serving(self, protocol_factory, sock,
 	self._add_reader(sock.fileno(), self._accept_connection,
 					 protocol_factory, sock, sslcontext, server, backlog,
 					 ssl_handshake_timeout)
+```
+### def _accept_connection
+```python
+def _accept_connection(
+		self, protocol_factory, sock,
+		sslcontext=None, server=None, backlog=100,
+		ssl_handshake_timeout=constants.SSL_HANDSHAKE_TIMEOUT):
+	# 当套接字读取事件被触发，此函数只调用一次，可能有多个连接在等待，所以在循环中处理他们。
+	for _ in range(backlog):
+		# 接收一个连接
+		try:
+			conn, addr = sock.accept()
+			if self._debug:
+				logger.debug("%r got a new connection from %r: %r",
+							 server, addr, conn)
+			conn.setblocking(False)
+		except (BlockingIOError, InterruptedError, ConnectionAbortedError):
+			return None
+		except OSError as exc:
+			# There's nowhere to send the error, so just log it.
+			if exc.errno in (errno.EMFILE, errno.ENFILE,
+							 errno.ENOBUFS, errno.ENOMEM):
+				# Some platforms (e.g. Linux keep reporting the FD as
+				# ready, so we remove the read handler temporarily.
+				# We'll try again in a while.
+				self.call_exception_handler({
+					'message': 'socket.accept() out of system resource',
+					'exception': exc,
+					'socket': sock,
+				})
+				self._remove_reader(sock.fileno())
+				self.call_later(constants.ACCEPT_RETRY_DELAY,
+								self._start_serving,
+								protocol_factory, sock, sslcontext, server,
+								backlog, ssl_handshake_timeout)
+			else:
+				raise  # The event loop will catch, log and ignore it.
+		else:
+			extra = {'peername': addr}
+			accept = self._accept_connection2(
+				protocol_factory, conn, extra, sslcontext, server,
+				ssl_handshake_timeout)
+			self.create_task(accept)
+```
+### async def _accept_connection2
+```python
+async def _accept_connection2(
+		self, protocol_factory, conn, extra,
+		sslcontext=None, server=None,
+		ssl_handshake_timeout=constants.SSL_HANDSHAKE_TIMEOUT):
+	protocol = None
+	transport = None
+	try:
+		# 创建连接协议
+		protocol = protocol_factory()
+		# 创建一个 future
+		waiter = self.create_future()
+		# 如果使用 ssl，创建 ssl 传输
+		if sslcontext:
+			transport = self._make_ssl_transport(
+				conn, protocol, sslcontext, waiter=waiter,
+				server_side=True, extra=extra, server=server,
+				ssl_handshake_timeout=ssl_handshake_timeout)
+		# 否则创建一般的传输
+		else:
+			transport = self._make_socket_transport(
+				conn, protocol, waiter=waiter, extra=extra,
+				server=server)
+		# 等待创建传输结束
+		try:
+			await waiter
+		except:
+			transport.close()
+			raise
+
+		# 现在由协议来处理连接，除了异常
+	except Exception as exc:
+		if self._debug:
+			context = {
+				'message':
+					'Error on transport creation for incoming connection',
+				'exception': exc,
+			}
+			if protocol is not None:
+				context['protocol'] = protocol
+			if transport is not None:
+				context['transport'] = transport
+			self.call_exception_handler(context)
+```
+### def _ensure_fd_no_transport
+确定文件描述符没有被传输占用。
+```python
+def _ensure_fd_no_transport(self, fd):
+	fileno = fd
+	if not isinstance(fileno, int):
+		try:
+			fileno = int(fileno.fileno())
+		except (AttributeError, TypeError, ValueError):
+			# This code matches selectors._fileobj_to_fd function.
+			raise ValueError(f"Invalid file object: {fd!r}") from None
+	try:
+		transport = self._transports[fileno]
+	except KeyError:
+		pass
+	else:
+		if not transport.is_closing():
+			raise RuntimeError(
+				f'File descriptor {fd!r} is used by transport '
+				f'{transport!r}')
+```
+### def _add_reader
+注册文件描述符的可读事件监控
+```python
+def _add_reader(self, fd, callback, *args):
+	self._check_closed()
+	# 创建一个回调函数处理器
+	handle = events.Handle(callback, args, self, None)
+	# 尝试从选择器中获取文件描述符注册的数据
+	try:
+		key = self._selector.get_key(fd)
+	# 如果文件描述符没有被注册，直接注册
+	except KeyError:
+		self._selector.register(fd, selectors.EVENT_READ,
+								(handle, None))
+	# 文件描述符已经被注册
+	else:
+		mask, (reader, writer) = key.events, key.data
+		# 重新注册文件描述符，更新注册的附加数据
+		self._selector.modify(fd, mask | selectors.EVENT_READ,
+							  (handle, writer))
+		# 取消之前注册的可读事件回调
+		if reader is not None:
+			reader.cancel()
+```
+### def _remove_reader
+删除文件描述符的可读事件监控
+```python
+def _remove_reader(self, fd):
+	if self.is_closed():
+		return False
+	# 获取注册的数据
+	try:
+		key = self._selector.get_key(fd)
+	except KeyError:
+		return False
+	else:
+		mask, (reader, writer) = key.events, key.data
+		mask &= ~selectors.EVENT_READ
+		# 如果只注册了可读事件监控，直接取消文件描述符的监控
+		if not mask:
+			self._selector.unregister(fd)
+		# 如果还注册了读写监控，重新注册成为可写监控
+		else:
+			self._selector.modify(fd, mask, (None, writer))
+		# 取消可读监控回调函数
+		if reader is not None:
+			reader.cancel()
+			return True
+		else:
+			return False
 ```
 ## class _SelectorTransport
 ### 初始化

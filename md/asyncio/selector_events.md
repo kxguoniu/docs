@@ -301,6 +301,183 @@ def _remove_reader(self, fd):
 		else:
 			return False
 ```
+### def _add_writer
+添加套接字可写事件监控
+```python
+def _add_writer(self, fd, callback, *args):
+	self._check_closed()
+	# 创建一个handle
+	handle = events.Handle(callback, args, self, None)
+	# 尝试获取该文件描述符已经注册的信息
+	try:
+		key = self._selector.get_key(fd)
+	# 没有被注册过，直接注册
+	except KeyError:
+		self._selector.register(fd, selectors.EVENT_WRITE,
+								(None, handle))
+	else:
+		# 取出之前注册的信息
+		mask, (reader, writer) = key.events, key.data
+		# 重新注册
+		self._selector.modify(fd, mask | selectors.EVENT_WRITE,
+							  (reader, handle))
+		# 取消之前注册的回调函数
+		if writer is not None:
+			writer.cancel()
+```
+### def _remove_writer
+删除套接字的可写事件监控
+```python
+def _remove_writer(self, fd):
+	"""Remove a writer callback."""
+	if self.is_closed():
+		return False
+	# 取出注册的事件信息
+	try:
+		key = self._selector.get_key(fd)
+	except KeyError:
+		return False
+	else:
+		mask, (reader, writer) = key.events, key.data
+		# Remove both writer and connector.
+		mask &= ~selectors.EVENT_WRITE
+		# 如果只注册了可写事件监控，直接取消注册
+		if not mask:
+			self._selector.unregister(fd)
+		# 如果注册了读写事件监控，重新注册，去掉可写事件监控
+		else:
+			self._selector.modify(fd, mask, (reader, None))
+		# 取消可写事件的回调函数
+		if writer is not None:
+			writer.cancel()
+			return True
+		else:
+			return False
+```
+### def add_reader
+```python
+def add_reader(self, fd, callback, *args):
+	self._ensure_fd_no_transport(fd)
+	return self._add_reader(fd, callback, *args)
+```
+### def remove_reader
+```python
+def remove_reader(self, fd):
+	self._ensure_fd_no_transport(fd)
+	return self._remove_reader(fd)
+```
+### def add_writer
+```python
+def add_writer(self, fd, callback, *args):
+	self._ensure_fd_no_transport(fd)
+	return self._add_writer(fd, callback, *args)
+```
+### def remove_writer
+```python
+def remove_writer(self, fd):
+	self._ensure_fd_no_transport(fd)
+	return self._remove_writer(fd)
+```
+### async def sock_recv
+从套接字接收数据并返回
+```python
+async def sock_recv(self, sock, n):
+	if self._debug and sock.gettimeout() != 0:
+		raise ValueError("the socket must be non-blocking")
+	fut = self.create_future()
+	# 接收数据
+	self._sock_recv(fut, None, sock, n)
+	# 等待接收数据完成返回
+	return await fut
+```
+### def _sock_recv
+```python
+def _sock_recv(self, fut, registered_fd, sock, n):
+	# 如果不能立即执行，会把自己添加为 I/O 回调
+	if registered_fd is not None:
+		# 删除可读事件监控
+		self.remove_reader(registered_fd)
+	if fut.cancelled():
+		return
+	# 接收数据
+	try:
+		data = sock.recv(n)
+	except (BlockingIOError, InterruptedError):
+		# 出现异常，添加可读事件监控
+		fd = sock.fileno()
+		self.add_reader(fd, self._sock_recv, fut, fd, sock, n)
+	except Exception as exc:
+		fut.set_exception(exc)
+	# 接收完毕，设置结果
+	else:
+		fut.set_result(data)
+```
+### async def sock_recv_into
+接收到的数据被存在缓冲区，返回接收的大小
+```python
+async def sock_recv_into(self, sock, buf):
+	if self._debug and sock.gettimeout() != 0:
+		raise ValueError("the socket must be non-blocking")
+	fut = self.create_future()
+	self._sock_recv_into(fut, None, sock, buf)
+	return await fut
+```
+### def _sock_recv_into
+参考 `_sock_recv_into`
+```python
+def _sock_recv_into(self, fut, registered_fd, sock, buf):
+	if registered_fd is not None:
+		self.remove_reader(registered_fd)
+	if fut.cancelled():
+		return
+	try:
+		nbytes = sock.recv_into(buf)
+	except (BlockingIOError, InterruptedError):
+		fd = sock.fileno()
+		self.add_reader(fd, self._sock_recv_into, fut, fd, sock, buf)
+	except Exception as exc:
+		fut.set_exception(exc)
+	else:
+		fut.set_result(nbytes)
+```
+### async def sock_sendall
+向套接字发送数据，如果出现异常，无法确定接收端处理了多少
+```python
+async def sock_sendall(self, sock, data):
+	if self._debug and sock.gettimeout() != 0:
+		raise ValueError("the socket must be non-blocking")
+	fut = self.create_future()
+	if data:
+		self._sock_sendall(fut, None, sock, data)
+	else:
+		fut.set_result(None)
+	return await fut
+```
+### def _sock_sendall
+```python
+def _sock_sendall(self, fut, registered_fd, sock, data):
+	if registered_fd is not None:
+		self.remove_writer(registered_fd)
+	if fut.cancelled():
+		return
+
+	try:
+		n = sock.send(data)
+	except (BlockingIOError, InterruptedError):
+		n = 0
+	except Exception as exc:
+		fut.set_exception(exc)
+		return
+	# 如果发送完成，返回
+	if n == len(data):
+		fut.set_result(None)
+	# 否则继续发送接下来的数据
+	else:
+		if n:
+			data = data[n:]
+		fd = sock.fileno()
+		self.add_writer(fd, self._sock_sendall, fut, fd, sock, data)
+```
 ## class _SelectorTransport
 ### 初始化
 ```python

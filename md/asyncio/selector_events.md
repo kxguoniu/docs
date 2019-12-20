@@ -478,6 +478,148 @@ def _sock_sendall(self, fut, registered_fd, sock, data):
 		fd = sock.fileno()
 		self.add_writer(fd, self._sock_sendall, fut, fd, sock, data)
 ```
+### async def sock_connect
+根据地址连接到远程套接字
+```python
+async def sock_connect(self, sock, address):
+	if self._debug and sock.gettimeout() != 0:
+		raise ValueError("the socket must be non-blocking")
+
+	if not hasattr(socket, 'AF_UNIX') or sock.family != socket.AF_UNIX:
+		# 如果不是 unix 套接字家族
+		resolved = await self._ensure_resolved(
+			address, family=sock.family, proto=sock.proto, loop=self)
+		_, _, _, _, address = resolved[0]
+
+	fut = self.create_future()
+	# 连接套接字
+	self._sock_connect(fut, sock, address)
+	return await fut
+```
+### def _sock_connect
+```python
+def _sock_connect(self, fut, sock, address):
+	# 取出套接字的文件描述符
+	fd = sock.fileno()
+	# 尝试连接地址
+	try:
+		sock.connect(address)
+	except (BlockingIOError, InterruptedError):
+		# 当C函数连接失败，连接在后台运行。我们必须等待直到连接成功或者失败时通知套接字可写
+		# 连接完成后删除可写时间监控
+		fut.add_done_callback(
+			functools.partial(self._sock_connect_done, fd))
+		# 添加可写事件监控，监控连接事件
+		self.add_writer(fd, self._sock_connect_cb, fut, sock, address)
+	except Exception as exc:
+		fut.set_exception(exc)
+	# 连接成功
+	else:
+		fut.set_result(None)
+```
+### def _sock_connect_done
+```python
+def _sock_connect_done(self, fd, fut):
+	self.remove_writer(fd)
+```
+### def _sock_connect_cb
+```python
+def _sock_connect_cb(self, fut, sock, address):
+	if fut.cancelled():
+		return
+
+	try:
+		err = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+		if err != 0:
+			# Jump to any except clause below.
+			raise OSError(err, f'Connect call failed {address}')
+	except (BlockingIOError, InterruptedError):
+		# 套接字仍然注册，回调将稍后重试
+		pass
+	except Exception as exc:
+		fut.set_exception(exc)
+	else:
+		fut.set_result(None)
+```
+### async def sock_accept
+接受一个请求，返回套接字和地址
+```python
+async def sock_accept(self, sock):
+	if self._debug and sock.gettimeout() != 0:
+		raise ValueError("the socket must be non-blocking")
+	fut = self.create_future()
+	self._sock_accept(fut, False, sock)
+	return await fut
+```
+### def _sock_accept
+```python
+def _sock_accept(self, fut, registered, sock):
+	fd = sock.fileno()
+	# 如果套接字已经注册，删除可读事件监控
+	if registered:
+		self.remove_reader(fd)
+	if fut.cancelled():
+		return
+	# 套接字接受一个连接，并设置非阻塞
+	try:
+		conn, address = sock.accept()
+		conn.setblocking(False)
+	except (BlockingIOError, InterruptedError):
+		# 连接出现异常，添加可读监控，监听其他进入的连接
+		self.add_reader(fd, self._sock_accept, fut, True, sock)
+	except Exception as exc:
+		fut.set_exception(exc)
+	else:
+		fut.set_result((conn, address))
+```
+### async def _sendfile_native
+```python
+async def _sendfile_native(self, transp, file, offset, count):
+	# 删除传输的文件描述符
+	del self._transports[transp._sock_fd]
+	# 传输的继续状态
+	resume_reading = transp.is_reading()
+	# 传输暂停读取数据
+	transp.pause_reading()
+	# 等待传输发送完数据
+	await transp._make_empty_waiter()
+	# 尝试发送文件
+	try:
+		return await self.sock_sendfile(transp._sock, file, offset, count,
+										fallback=False)
+	finally:
+		# 传输取消占用
+		transp._reset_empty_waiter()
+		# 如果可以，恢复读取数据
+		if resume_reading:
+			transp.resume_reading()
+		# 注册传输
+		self._transports[transp._sock_fd] = transp
+```
+### def _process_events
+```python
+def _process_events(self, event_list):
+	for key, mask in event_list:
+		fileobj, (reader, writer) = key.fileobj, key.data
+		if mask & selectors.EVENT_READ and reader is not None:
+			if reader._cancelled:
+				self._remove_reader(fileobj)
+			else:
+				self._add_callback(reader)
+		if mask & selectors.EVENT_WRITE and writer is not None:
+			if writer._cancelled:
+				self._remove_writer(fileobj)
+			else:
+				self._add_callback(writer)
+```
+### def _stop_serving
+停止服务器
+```python
+def _stop_serving(self, sock):
+	# 删除可读事件监控，不在接受请求。关闭套接字。
+	self._remove_reader(sock.fileno())
+	sock.close()
+```
 ## class _SelectorTransport
 ### 初始化
 ```python

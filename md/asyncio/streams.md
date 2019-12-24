@@ -112,7 +112,7 @@ async def start_unix_server(client_connected_cb, path=None, *,
 
 	return await loop.create_unix_server(factory, path, **kwds)
 ```
-## class 
+## class FlowControlMixin
 可重用流控制逻辑
 ### 初始化
 ```python
@@ -267,3 +267,105 @@ def __del__(self):
 	if closed.done() and not closed.cancelled():
 		closed.exception()
 ```
+## class StreamWriter
+写入流，包装传输
+### 初始化
+```python
+class StreamWriter:
+    def __init__(self, transport, protocol, reader, loop):
+		# 初始化传输和协议
+        self._transport = transport
+        self._protocol = protocol
+		# 读取必须为空或者是读取流
+        assert reader is None or isinstance(reader, StreamReader)
+        self._reader = reader
+        self._loop = loop
+```
+### def transport
+```python
+@property
+def transport(self):
+	return self._transport
+```
+### 调用传输的方法
+```python
+def write(self, data):
+	self._transport.write(data)
+
+def writelines(self, data):
+	self._transport.writelines(data)
+
+def write_eof(self):
+	return self._transport.write_eof()
+
+def can_write_eof(self):
+	return self._transport.can_write_eof()
+
+def close(self):
+	return self._transport.close()
+
+def is_closing(self):
+	return self._transport.is_closing()
+
+def get_extra_info(self, name, default=None):
+	return self._transport.get_extra_info(name, default)
+```
+### async def wait_closed
+等待协议关闭
+```python
+async def wait_closed(self):
+    await self._protocol._closed
+```
+### async def drain
+刷新写缓冲区
+```python
+async def drain(self):
+	"""
+	  w.write(data)
+	  await w.drain()
+	"""
+	# 查看读取流是否出现了异常
+	if self._reader is not None:
+		exc = self._reader.exception()
+		if exc is not None:
+			raise exc
+	# 如果传输已经关闭
+	if self._transport.is_closing():
+		# Yield to the event loop so connection_lost() may be called.
+		# Without this, _drain_helper() would return
+		# immediately, and code that calls
+		#     write(...); await drain()
+		# in a loop would never call connection_lost(), so it
+		# would not see an error when the socket is closed.
+		await sleep(0, loop=self._loop)
+	await self._protocol._drain_helper()
+```
+## class 
+### 初始化
+```python
+class StreamReader:
+    def __init__(self, limit=_DEFAULT_LIMIT, loop=None):
+        # The line length limit is  a security feature;
+        # it also doubles as half the buffer limit.
+
+        if limit <= 0:
+            raise ValueError('Limit cannot be <= 0')
+
+        self._limit = limit
+        if loop is None:
+            self._loop = events.get_event_loop()
+        else:
+            self._loop = loop
+		# 缓冲区
+        self._buffer = bytearray()
+		# 完成标识
+        self._eof = False
+		# A future used by _wait_for_data()
+        self._waiter = None
+        self._exception = None
+		# 传输
+        self._transport = None
+		# 暂停状态
+        self._paused = False
+```
+### def

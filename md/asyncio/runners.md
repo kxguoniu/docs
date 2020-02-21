@@ -1,6 +1,7 @@
 [TOC]
 # asyncio 之 runners.py
 ## 摘要
+本文件中只有一个`run`函数用于安全的执行一个协程。
 ## def run
 ```python
 def run(main, *, debug=False):
@@ -57,5 +58,4 @@ def _cancel_all_tasks(loop):
                 'exception': task.exception(),
                 'task': task,
             })
-
 ```

@@ -1,8 +1,8 @@
 [TOC]
 # asyncio 之 transports.py
 ## 摘要
-抽象的传输类
-
+该文件中定义了基础传输接口，只读传输接口，只写传输接口，读写传输接口，报文传输接口的抽象类。
+以及一个写入流控制混合基类的实现。
 ## class BaseTransport
 基础的传输类
 ```python
@@ -29,7 +29,7 @@ class BaseTransport:
         raise NotImplementedError
 ```
 ## class ReadTransport
-只读传输的接口类
+只读传输的接口
 ```python
 class ReadTransport(BaseTransport):
 	# 如果传输正在读取数据返回True
@@ -140,7 +140,7 @@ class _FlowControlMixin(Transport):
                     'protocol': self._protocol,
                 })
 
-	# 获取缓存区的设置
+	# 获取缓存区的设置，上下限
     def get_write_buffer_limits(self):
         return (self._low_water, self._high_water)
 
@@ -161,7 +161,7 @@ class _FlowControlMixin(Transport):
         self._high_water = high
         self._low_water = low
 
-	# 对外开放的设置缓存区大小
+	# 对外开放的设置缓存区大小方法
     def set_write_buffer_limits(self, high=None, low=None):
         self._set_write_buffer_limits(high=high, low=low)
         self._maybe_pause_protocol()

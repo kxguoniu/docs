@@ -2,7 +2,7 @@
 # asyncio 之 format_helpers.py
 ## 摘要
 ## def _get_function_source
-返回函数所在的文件名，以及在文件中的位置
+返回函数所在的文件名，以及在文件中的行号
 ```python
 def _get_function_source(func):
     func = inspect.unwrap(func)
@@ -16,7 +16,7 @@ def _get_function_source(func):
     return None
 ```
 ## def _format_callback_source
-`funcname(arg1, arg2[, ...]) at filename:line`
+返回内容格式 `funcname(arg1, arg2[, ...]) at filename:line`
 ```python
 def _format_callback_source(func, args):
     func_repr = _format_callback(func, args, None)
@@ -26,7 +26,7 @@ def _format_callback_source(func, args):
     return func_repr
 ```
 ## def _format_args_and_kwargs
-`(arg1, arg2[, ...], kwarg=arg, kwarg2=arg[, ...])`
+返回内容格式 `(arg1, arg2[, ...], kwarg=arg, kwarg2=arg[, ...])`
 ```python
 def _format_args_and_kwargs(args, kwargs):
     # 使用reprlib限制输出的长度
@@ -38,7 +38,7 @@ def _format_args_and_kwargs(args, kwargs):
     return '({})'.format(', '.join(items))
 ```
 ## def _format_callback
-`funcname(arg1, arg2[, ...], kwarg=arg, kwarg2=arg[, ...])`
+返回内容格式 `funcname(arg1, arg2[, ...], kwarg=arg, kwarg2=arg[, ...])`
 ```python
 def _format_callback(func, args, kwargs, suffix=''):
     if isinstance(func, functools.partial):

@@ -1,13 +1,16 @@
 [TOC]
 # asyncio 之 selectors.py
 ## 摘要
-select 的包装函数，可以自己适配系统
+`selectors` 在 `select` 模块的基础上进行了一次封装。可以根据系统环境选择当前平台的最优实现。并且在注册的时候添加了一个新的属性`data`，`data`可以是任何类型的数据，但通常我们都会把它作为一个回调函数来使用。
+`selectors` 选择的顺序则是 `kqueue` -> `epoll` -> `devpoll` -> `poll` -> `select`。
 
 ## 文件内置属性和方法
 ```python
+# 可读事件
 EVENT_READ = (1 << 0)
+# 可写事件
 EVENT_WRITE = (1 << 1)
-# 使得文件对象与其文件描述符，关联事件和附加数据关联。
+# 使得文件对象与其文件描述符，关联事件以及附加数据关联起来作为一个整体。
 SelectorKey = namedtuple('SelectorKey', ['fileobj', 'fd', 'events', 'data'])
 def _fileobj_to_fd(fileobj):
     # 返回文件对象的文件描述符
@@ -25,17 +28,23 @@ def _fileobj_to_fd(fileobj):
 ```
 ## class _SelectorMapping
 文件对象与选择器的映射关系
+`_SelectorMapping`实例化对象作为选择器的一个属性存在，功能是判断已注册文件描述符的数量、获取文件对象注册的信息等。
 ```python
 class _SelectorMapping(Mapping):
     """Mapping of file objects to selector keys."""
 
     def __init__(self, selector):
+		# 选择器对象
         self._selector = selector
 
     def __len__(self):
+		# 返回选择器已经注册的文件描述符数量
         return len(self._selector._fd_to_key)
 
     def __getitem__(self, fileobj):
+		# 获取已经注册文件对象的信息
+		# fd； 文件描述符
+		# key； SelectorKey 对象
         try:
             fd = self._selector._fileobj_lookup(fileobj)
             return self._selector._fd_to_key[fd]
@@ -102,6 +111,7 @@ class BaseSelector(metaclass=ABCMeta):
 class _BaseSelectorImpl(BaseSelector):
     def __init__(self):
         # this maps file descriptors to keys
+		# 文件描述符与 SelectorKey 的映射
         self._fd_to_key = {}
         # 只读的映射
         self._map = _SelectorMapping(self)
@@ -127,7 +137,7 @@ def register(self, fileobj, events, data=None):
 	if (not events) or (events & ~(EVENT_READ | EVENT_WRITE)):
 		raise ValueError("Invalid events: {!r}".format(events))
 
-	# 创建一个选择器
+	# 创建一个 SelectorKey 对象
 	key = SelectorKey(fileobj, self._fileobj_lookup(fileobj), events, data)
 
 	if key.fd in self._fd_to_key:

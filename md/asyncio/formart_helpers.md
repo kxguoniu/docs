@@ -16,7 +16,9 @@ def _get_function_source(func):
     return None
 ```
 ## def _format_callback_source
-返回内容格式 `funcname(arg1, arg2[, ...]) at filename:line`
+返回函数调用的参数以及在文件中的位置，只有位置参数
+返回内容格式1 `funcname(arg1, arg2[, ...]) at filename:line`
+返回内容格式2 `funcname(arg1, ..., kwarg1=arg1, ...)(arg1, ...) at filename:line`
 ```python
 def _format_callback_source(func, args):
     func_repr = _format_callback(func, args, None)
@@ -38,7 +40,9 @@ def _format_args_and_kwargs(args, kwargs):
     return '({})'.format(', '.join(items))
 ```
 ## def _format_callback
-返回内容格式 `funcname(arg1, arg2[, ...], kwarg=arg, kwarg2=arg[, ...])`
+返回函数调用的参数，位置参数和字典参数
+返回内容格式1 `funcname(arg1, arg2[, ...], kwarg=arg, kwarg2=arg[, ...])`
+返回内容格式2 `funcname(arg1, ..., kwarg1, ...)(arg1, ..., kwarg1, ...)`
 ```python
 def _format_callback(func, args, kwargs, suffix=''):
     if isinstance(func, functools.partial):
@@ -58,6 +62,7 @@ def _format_callback(func, args, kwargs, suffix=''):
     return func_repr
 ```
 ## def extract_stack
+代码回溯限制
 ```python
 def extract_stack(f=None, limit=None):
     """Replacement for traceback.extract_stack() that only does the

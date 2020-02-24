@@ -14,3 +14,5 @@
 跳转  [asyncio 之 locks.py](http://52pyc.cn/blogdetail/126)
 ## events.py
 跳转  [asyncio 之 events.py](http://52pyc.cn/blogdetail/128)
+## selectors.py
+跳转  [asyncio 之 selectors.py]()

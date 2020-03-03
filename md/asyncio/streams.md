@@ -182,7 +182,7 @@ async def _drain_helper(self):
 	await waiter
 ```
 ## class StreamReaderProtocol
-协议和流读取的适配器类
+流读取协议类，用来适配读取流和协议之间的关系。
 ### 初始化
 ```python
 class StreamReaderProtocol(FlowControlMixin, protocols.Protocol):
@@ -592,58 +592,6 @@ async def readuntil(self, separator=b'\n'):
 	del self._buffer[:isep + seplen]
 	self._maybe_resume_transport()
 	return bytes(chunk)
-```
-### async def read
-```python
-async def read(self, n=-1):
-	"""Read up to `n` bytes from the stream.
-
-	If n is not provided, or set to -1, read until EOF and return all read
-	bytes. If the EOF was received and the internal buffer is empty, return
-	an empty bytes object.
-
-	If n is zero, return empty bytes object immediately.
-
-	If n is positive, this function try to read `n` bytes, and may return
-	less or equal bytes than requested, but at least one byte. If EOF was
-	received before any byte is read, this function returns empty byte
-	object.
-
-	Returned value is not limited with limit, configured at stream
-	creation.
-
-	If stream was paused, this function will automatically resume it if
-	needed.
-	"""
-
-	if self._exception is not None:
-		raise self._exception
-
-	if n == 0:
-		return b''
-
-	if n < 0:
-		# This used to just loop creating a new waiter hoping to
-		# collect everything in self._buffer, but that would
-		# deadlock if the subprocess sends more than self.limit
-		# bytes.  So just call self.read(self._limit) until EOF.
-		blocks = []
-		while True:
-			block = await self.read(self._limit)
-			if not block:
-				break
-			blocks.append(block)
-		return b''.join(blocks)
-
-	if not self._buffer and not self._eof:
-		await self._wait_for_data('read')
-
-	# This will work right even if buffer is less than n bytes
-	data = bytes(self._buffer[:n])
-	del self._buffer[:n]
-
-	self._maybe_resume_transport()
-	return data
 ```
 ### async def read
 ```python

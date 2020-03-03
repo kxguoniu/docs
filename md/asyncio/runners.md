@@ -1,7 +1,7 @@
 [TOC]
 # asyncio 之 runners.py
 ## 摘要
-本文件中只有一个`run`函数用于安全的执行一个协程。
+本文件中只有一个`run`函数用于安全的执行一个协程。可以通过 asyncio.run()调用。
 ## def run
 ```python
 def run(main, *, debug=False):

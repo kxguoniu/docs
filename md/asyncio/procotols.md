@@ -1,7 +1,7 @@
 [TOC]
 # asyncio 之 protocols.py
 ## 摘要
-协议
+该文件中实现了协议的公共基类，流协议，缓冲区协议，报文协议，子进程协议等。
 ## class BaseProtocol
 协议接口的公共基类
 ```python
@@ -19,7 +19,7 @@ class BaseProtocol:
         # 可以写入缓存区
 ```
 ## class Protocol
-流传输的接口
+流传输协议
 ```python
 class Protocol(BaseProtocol):
     """
@@ -39,7 +39,7 @@ class Protocol(BaseProtocol):
 ```
 ## class BufferedProtocol
 手动控制缓冲区的流协议接口，3.7添加
-事件循环可以使用协议提供的接受缓冲区来避免不必要的数据复制。
+事件循环可以使用协议提供的接收缓冲区来避免不必要的数据复制。
 ```python
 class BufferedProtocol(BaseProtocol):
     """
@@ -52,10 +52,10 @@ class BufferedProtocol(BaseProtocol):
     """
 
     def get_buffer(self, sizehint):
-		# 分配一个新的接受缓存区
+		# 分配一个新的接收缓存区
 
     def buffer_updated(self, nbytes):
-		# 使用接受到的数据更新缓冲区，参数是写入缓冲区的总字节数
+		# 使用接收到的数据更新缓冲区，参数是写入缓冲区的总字节数
 
     def eof_received(self):
 		#
@@ -65,7 +65,7 @@ class BufferedProtocol(BaseProtocol):
 ```python
 class DatagramProtocol(BaseProtocol):
     def datagram_received(self, data, addr):
-        # 接受数据时调用
+        # 接收数据时调用
 
     def error_received(self, exc):
 		# 当发送或者接收出现异常时调用

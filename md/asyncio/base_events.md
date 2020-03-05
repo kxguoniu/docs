@@ -2,6 +2,7 @@
 ## class BaseEventLoop
 ### 初始化
 ```python
+class BaseEventLoop(events.AbstractEventLoop):
 def __init__(self):
 	# 取消的定时执行对象的数量
 	self._timer_cancelled_count = 0
@@ -454,11 +455,13 @@ async def getnameinfo(self, sockaddr, flags=0):
 		None, socket.getnameinfo, sockaddr, flags)
 ```
 ### async def sock_sendfile
+通过sock发送文件
 ```python
 async def sock_sendfile(self, sock, file, offset=0, count=None,
 						*, fallback=True):
 	if self._debug and sock.gettimeout() != 0:
 		raise ValueError("the socket must be non-blocking")
+	#检查文件和套接字是否符合发送要求
 	self._check_sendfile_params(sock, file, offset, count)
 	try:
 		return await self._sock_sendfile_native(sock, file,

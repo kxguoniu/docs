@@ -8,6 +8,7 @@ class _UnixSelectorEventLoop(selector_events.BaseSelectorEventLoop):
 	# 添加信号处理和unix套接字
     def __init__(self, selector=None):
         super().__init__(selector)
+		# 信号处理字典
         self._signal_handlers = {}
 ```
 ### def close
@@ -21,7 +22,7 @@ def close(self):
 			self.remove_signal_handler(sig)
 	# 如果python解释器正在关闭
 	else:
-		# 如果存在信号处理器
+		# 记录警告信息
 		if self._signal_handlers:
 			warnings.warn(f"Closing the loop {self!r} "
 						  f"on interpreter shutdown "
@@ -31,7 +32,7 @@ def close(self):
 			self._signal_handlers.clear()
 ```
 ### def _process_self_data
-处理自己的数据
+处理从管道接收到的信号值
 ```python
 def _process_self_data(self, data):
 	for signum in data:
@@ -49,7 +50,7 @@ def add_signal_handler(self, sig, callback, *args):
 			coroutines.iscoroutinefunction(callback)):
 		raise TypeError("coroutines cannot be used "
 						"with add_signal_handler()")
-	# 检查信号
+	# 检查信号是否有效
 	self._check_signal(sig)
 	self._check_closed()
 	try:
@@ -57,7 +58,7 @@ def add_signal_handler(self, sig, callback, *args):
 		signal.set_wakeup_fd(self._csock.fileno())
 	except (ValueError, OSError) as exc:
 		raise RuntimeError(str(exc))
-	# 添加一个处理器
+	# 创建该信号的处理函数
 	handle = events.Handle(callback, args, self, None)
 	# 关联信号与处理函数
 	self._signal_handlers[sig] = handle
@@ -108,6 +109,7 @@ def remove_signal_handler(self, sig):
 	except KeyError:
 		return False
 
+	# 还原默认的信号处理程序
 	if sig == signal.SIGINT:
 		handler = signal.default_int_handler
 	else:
@@ -120,7 +122,7 @@ def remove_signal_handler(self, sig):
 			raise RuntimeError(f'sig {sig} cannot be caught')
 		else:
 			raise
-
+	# 如果信号处理字典为空，还原默认的文件描述符
 	if not self._signal_handlers:
 		try:
 			signal.set_wakeup_fd(-1)
@@ -130,7 +132,7 @@ def remove_signal_handler(self, sig):
 	return True
 ```
 ### def _check_signal
-检查信号是否有效
+检查信号值是否有效
 ```python
 def _check_signal(self, sig):
 	if not isinstance(sig, int):
@@ -140,18 +142,21 @@ def _check_signal(self, sig):
 		raise ValueError(f'sig {sig} out of range(1, {signal.NSIG})')
 ```
 ### def _make_read_pipe_transport
+创建读取管道的传输
 ```python
 def _make_read_pipe_transport(self, pipe, protocol, waiter=None,
 							  extra=None):
 	return _UnixReadPipeTransport(self, pipe, protocol, waiter, extra)
 ```
 ### def _make_write_pipe_transport
+创建写入管道的传输
 ```python
 def _make_write_pipe_transport(self, pipe, protocol, waiter=None,
 							   extra=None):
 	return _UnixWritePipeTransport(self, pipe, protocol, waiter, extra)
 ```
 ### def _make_subprocess_transport
+创建子进程管道的传输
 ```python
 async def _make_subprocess_transport(self, protocol, args, shell,
 									 stdin, stdout, stderr, bufsize,
@@ -175,18 +180,20 @@ async def _make_subprocess_transport(self, protocol, args, shell,
 	return transp
 ```
 ### def _child_watcher_callback
+子进程监视器回调函数
 ```python
 def _child_watcher_callback(self, pid, returncode, transp):
 	self.call_soon_threadsafe(transp._process_exited, returncode)
 ```
 ### async def create_unix_connection
-创建一个 unix 连接
+创建一个连接，unix
 ```python
 async def create_unix_connection(
 		self, protocol_factory, path=None, *,
 		ssl=None, sock=None,
 		server_hostname=None,
 		ssl_handshake_timeout=None):
+	# 检查
 	assert server_hostname is None or isinstance(server_hostname, str)
 	if ssl:
 		if server_hostname is None:
@@ -228,6 +235,7 @@ async def create_unix_connection(
 	return transport, protocol
 ```
 ### async def create_unix_server
+创建一个server， unix
 ```python
 async def create_unix_server(
 		self, protocol_factory, path=None, *,
@@ -299,6 +307,7 @@ async def create_unix_server(
 	return server
 ```
 ### async def _sock_sendfile_native
+跳过文件内容缓存，直接使用系统的方法发送文件。
 ```python
 async def _sock_sendfile_native(self, sock, file, offset, count):
 	try:
@@ -326,15 +335,12 @@ async def _sock_sendfile_native(self, sock, file, offset, count):
 	return await fut
 ```
 ### def _sock_sendfile_native_impl
+使用系统的方法发送文件。
 ```python
 def _sock_sendfile_native_impl(self, fut, registered_fd, sock, fileno,
 							   offset, count, blocksize, total_sent):
 	fd = sock.fileno()
 	if registered_fd is not None:
-		# Remove the callback early.  It should be rare that the
-		# selector says the fd is ready but the call still returns
-		# EAGAIN, and I am willing to take a hit in that case in
-		# order to simplify the common case.
 		self.remove_writer(registered_fd)
 	if fut.cancelled():
 		self._sock_sendfile_update_filepos(fileno, offset, total_sent)
@@ -358,19 +364,11 @@ def _sock_sendfile_native_impl(self, fut, registered_fd, sock, fileno,
 		if (registered_fd is not None and
 				exc.errno == errno.ENOTCONN and
 				type(exc) is not ConnectionError):
-			# If we have an ENOTCONN and this isn't a first call to
-			# sendfile(), i.e. the connection was closed in the middle
-			# of the operation, normalize the error to ConnectionError
-			# to make it consistent across all Posix systems.
 			new_exc = ConnectionError(
 				"socket is not connected", errno.ENOTCONN)
 			new_exc.__cause__ = exc
 			exc = new_exc
 		if total_sent == 0:
-			# We can get here for different reasons, the main
-			# one being 'file' is not a regular mmap(2)-like
-			# file, in which case we'll fall back on using
-			# plain send().
 			err = events.SendfileNotAvailableError(
 				"os.sendfile call failed")
 			self._sock_sendfile_update_filepos(fileno, offset, total_sent)
@@ -463,7 +461,7 @@ def _read_ready(self):
 	except OSError as exc:
 		self._fatal_error(exc, 'Fatal read error on pipe transport')
 	else:
-		# 读取到数据，把数据写入到协议中
+		# 读取到数据，把数据通过协议写入到读取流
 		if data:
 			self._protocol.data_received(data)
 		# 没有读取到数据，管道已经关闭，重置传输
@@ -476,13 +474,13 @@ def _read_ready(self):
 			self._loop.call_soon(self._call_connection_lost, None)
 ```
 ### def pause_reading
-暂停读取数据
+暂停从管道中接收数据
 ```python
 def pause_reading(self):
 	self._loop._remove_reader(self._fileno)
 ```
 ### def resume_reading
-恢复读取数据
+恢复从管道中接收数据
 ```python
 def resume_reading(self):
 	self._loop._add_reader(self._fileno, self._read_ready)
@@ -520,7 +518,7 @@ def __del__(self):
 ### def _fatal_error
 ```python
 def _fatal_error(self, exc, message='Fatal error on pipe transport'):
-	# should be called by exception handler only
+	# 仅仅从异常处理器中调用。
 	if (isinstance(exc, OSError) and exc.errno == errno.EIO):
 		if self._loop.get_debug():
 			logger.debug("%r: %s", self, message, exc_info=True)
@@ -534,6 +532,7 @@ def _fatal_error(self, exc, message='Fatal error on pipe transport'):
 	self._close(exc)
 ```
 ### def _call_connection_lost
+管道连接断开，清理数据。
 ```python
 def _call_connection_lost(self, exc):
 	try:
@@ -589,13 +588,13 @@ class _UnixWritePipeTransport(transports._FlowControlMixin,
                                  waiter, None)
 ```
 ### def get_write_buffer_size
-获取写缓冲区的大小
+获取当前写缓冲区的大小
 ```python
 def get_write_buffer_size(self):
 	return len(self._buffer)
 ```
 ### def _read_ready
-管道可读事件处理函数
+管道可读事件处理函数，关闭管道。
 ```python
 def _read_ready(self):
 	# Pipe was closed by peer.
@@ -608,7 +607,7 @@ def _read_ready(self):
 		self._close()
 ```
 ### def write
-使用管道写入数据
+向管道中发送数据。
 ```python
 def write(self, data):
 	assert isinstance(data, (bytes, bytearray, memoryview)), repr(data)
@@ -649,7 +648,7 @@ def write(self, data):
 	self._maybe_pause_protocol()
 ```
 ### def _write_ready
-管道可写事件处理函数
+继续向管道发送传输缓冲区中的数据
 ```python
 def _write_ready(self):
 	assert self._buffer, 'Data should not be empty'
@@ -686,7 +685,7 @@ def _write_ready(self):
 			del self._buffer[:n]
 ```
 ### def write_eof
-管道写完毕
+写入数据结束，设置标识
 ```python
 def can_write_eof(self):
 	return True
@@ -795,11 +794,295 @@ class _UnixSubprocessTransport(base_subprocess.BaseSubprocessTransport):
                 stdin.close()
                 stdin_w.close()
 ```
+## class AbstractChildWatcher
+### def add_child_handler
+注册一个新的子处理器，子类重写。
+### def remove_child_handler
+删除子处理器，子类重写。
+### def attach_loop
+将监视程序附加到事件循环，子类重写。
+### def close
+关闭监视器，子类重写。
+### def __enter__
+### def __exit__
+## class BaseChildWatcher
+### 初始化
+```python
+class BaseChildWatcher(AbstractChildWatcher):
+    def __init__(self):
+        self._loop = None
+        self._callbacks = {}
+```
+### def close
+```python
+def close(self):
+	self.attach_loop(None)
+```
+### def _do_waitpid
+```python
+def _do_waitpid(self, expected_pid):
+	raise NotImplementedError()
+
+def _do_waitpid_all(self):
+	raise NotImplementedError()
+```
+### def attach_loop
+```python
+def attach_loop(self, loop):
+	assert loop is None or isinstance(loop, events.AbstractEventLoop)
+
+	if self._loop is not None and loop is None and self._callbacks:
+		warnings.warn(
+			'A loop is being detached '
+			'from a child watcher with pending handlers',
+			RuntimeWarning)
+
+	if self._loop is not None:
+		self._loop.remove_signal_handler(signal.SIGCHLD)
+
+	self._loop = loop
+	if loop is not None:
+		loop.add_signal_handler(signal.SIGCHLD, self._sig_chld)
+
+		# Prevent a race condition in case a child terminated
+		# during the switch.
+		self._do_waitpid_all()
+```
+### def _sig_chld
+```python
+def _sig_chld(self):
+	try:
+		self._do_waitpid_all()
+	except Exception as exc:
+		# self._loop should always be available here
+		# as '_sig_chld' is added as a signal handler
+		# in 'attach_loop'
+		self._loop.call_exception_handler({
+			'message': 'Unknown exception in SIGCHLD handler',
+			'exception': exc,
+		})
+```
+### def _compute_returncode
+```python
+def _compute_returncode(self, status):
+	if os.WIFSIGNALED(status):
+		# The child process died because of a signal.
+		return -os.WTERMSIG(status)
+	elif os.WIFEXITED(status):
+		# The child process exited (e.g sys.exit()).
+		return os.WEXITSTATUS(status)
+	else:
+		# The child exited, but we don't understand its status.
+		# This shouldn't happen, but if it does, let's just
+		# return that status; perhaps that helps debug it.
+		return status
+```
+## class SafeChildWatcher
+### def close
+```python
+def close(self):
+	self._callbacks.clear()
+	super().close()
+```
+### 初始化
+```python
+def __enter__(self):
+	return self
+
+def __exit__(self, a, b, c):
+	pass
+```
+### def add_child_handler
+```python
+def add_child_handler(self, pid, callback, *args):
+	if self._loop is None:
+		raise RuntimeError(
+			"Cannot add child handler, "
+			"the child watcher does not have a loop attached")
+
+	self._callbacks[pid] = (callback, args)
+
+	# Prevent a race condition in case the child is already terminated.
+	self._do_waitpid(pid)
+```
+### def remove_child_handler
+```python
+def remove_child_handler(self, pid):
+	try:
+		del self._callbacks[pid]
+		return True
+	except KeyError:
+		return False
+```
+### def _do_waitpid
+```python
+def _do_waitpid_all(self):
+
+	for pid in list(self._callbacks):
+		self._do_waitpid(pid)
+
+def _do_waitpid(self, expected_pid):
+	assert expected_pid > 0
+
+	try:
+		pid, status = os.waitpid(expected_pid, os.WNOHANG)
+	except ChildProcessError:
+		# The child process is already reaped
+		# (may happen if waitpid() is called elsewhere).
+		pid = expected_pid
+		returncode = 255
+		logger.warning(
+			"Unknown child process pid %d, will report returncode 255",
+			pid)
+	else:
+		if pid == 0:
+			# The child process is still alive.
+			return
+
+		returncode = self._compute_returncode(status)
+		if self._loop.get_debug():
+			logger.debug('process %s exited with returncode %s',
+						 expected_pid, returncode)
+
+	try:
+		callback, args = self._callbacks.pop(pid)
+	except KeyError:  # pragma: no cover
+		# May happen if .remove_child_handler() is called
+		# after os.waitpid() returns.
+		if self._loop.get_debug():
+			logger.warning("Child watcher got an unexpected pid: %r",
+						   pid, exc_info=True)
+	else:
+		callback(pid, returncode, *args)
+```
+## class FastChildWatcher
+### 初始化
+```python
+class FastChildWatcher(BaseChildWatcher):
+    """'Fast' child watcher implementation.
+
+    This implementation reaps every terminated processes by calling
+    os.waitpid(-1) directly, possibly breaking other code spawning processes
+    and waiting for their termination.
+
+    There is no noticeable overhead when handling a big number of children
+    (O(1) each time a child terminates).
+    """
+    def __init__(self):
+        super().__init__()
+        self._lock = threading.Lock()
+        self._zombies = {}
+        self._forks = 0
+```
+### 
+```python
+def close(self):
+	self._callbacks.clear()
+	self._zombies.clear()
+	super().close()
+```
+### 
+```python
+def __enter__(self):
+	with self._lock:
+		self._forks += 1
+
+		return self
+
+def __exit__(self, a, b, c):
+	with self._lock:
+		self._forks -= 1
+
+		if self._forks or not self._zombies:
+			return
+
+		collateral_victims = str(self._zombies)
+		self._zombies.clear()
+
+	logger.warning(
+		"Caught subprocesses termination from unknown pids: %s",
+		collateral_victims)
+```
+### 
+```python
+def add_child_handler(self, pid, callback, *args):
+	assert self._forks, "Must use the context manager"
+
+	if self._loop is None:
+		raise RuntimeError(
+			"Cannot add child handler, "
+			"the child watcher does not have a loop attached")
+
+	with self._lock:
+		try:
+			returncode = self._zombies.pop(pid)
+		except KeyError:
+			# The child is running.
+			self._callbacks[pid] = callback, args
+			return
+
+	# The child is dead already. We can fire the callback.
+	callback(pid, returncode, *args)
+```
+### 
+```python
+def remove_child_handler(self, pid):
+	try:
+		del self._callbacks[pid]
+		return True
+	except KeyError:
+		return False
+```
+### 
+```python
+def _do_waitpid_all(self):
+	# Because of signal coalescing, we must keep calling waitpid() as
+	# long as we're able to reap a child.
+	while True:
+		try:
+			pid, status = os.waitpid(-1, os.WNOHANG)
+		except ChildProcessError:
+			# No more child processes exist.
+			return
+		else:
+			if pid == 0:
+				# A child process is still alive.
+				return
+
+			returncode = self._compute_returncode(status)
+
+		with self._lock:
+			try:
+				callback, args = self._callbacks.pop(pid)
+			except KeyError:
+				# unknown child
+				if self._forks:
+					# It may not be registered yet.
+					self._zombies[pid] = returncode
+					if self._loop.get_debug():
+						logger.debug('unknown process %s exited '
+									 'with returncode %s',
+									 pid, returncode)
+					continue
+				callback = None
+			else:
+				if self._loop.get_debug():
+					logger.debug('process %s exited with returncode %s',
+								 pid, returncode)
+
+		if callback is None:
+			logger.warning(
+				"Caught subprocess termination from unknown pid: "
+				"%d -> %d", pid, returncode)
+		else:
+			callback(pid, returncode, *args)
+```
 ## class _UnixDefaultEventLoopPolicy
-带有子进程监视器的事件循环策略
+带有子进程监视器的默认事件循环策略
 ### 初始化
 ```python
 class _UnixDefaultEventLoopPolicy(events.BaseDefaultEventLoopPolicy):
+	# 事件循环工厂
     _loop_factory = _UnixSelectorEventLoop
 
     def __init__(self):
@@ -807,6 +1090,7 @@ class _UnixDefaultEventLoopPolicy(events.BaseDefaultEventLoopPolicy):
         self._watcher = None
 ```
 ### def _init_watcher
+初始化子监视器
 ```python
 def _init_watcher(self):
 	with events._lock:
@@ -817,15 +1101,9 @@ def _init_watcher(self):
 				self._watcher.attach_loop(self._local._loop)
 ```
 ### def set_event_loop
+设置事件循环，如果之前设置了子监视器，那么会一块更新。
 ```python
 def set_event_loop(self, loop):
-	"""Set the event loop.
-
-	As a side effect, if a child watcher was set before, then calling
-	.set_event_loop() from the main thread will call .attach_loop(loop) on
-	the child watcher.
-	"""
-
 	super().set_event_loop(loop)
 
 	if (self._watcher is not None and
@@ -833,6 +1111,7 @@ def set_event_loop(self, loop):
 		self._watcher.attach_loop(loop)
 ```
 ### def get_child_watcher
+获取子监视器
 ```python
 def get_child_watcher(self):
 	"""Get the watcher for child processes.
@@ -845,6 +1124,7 @@ def get_child_watcher(self):
 	return self._watcher
 ```
 ### def set_child_watcher
+设置子监视器
 ```python
 def set_child_watcher(self, watcher):
 	"""Set the watcher for child processes."""

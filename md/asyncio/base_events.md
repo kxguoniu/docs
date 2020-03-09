@@ -534,7 +534,7 @@ def _check_sendfile_params(self, sock, file, offset, count):
 				offset))
 ```
 ### async def create_connection
-连接到一个tcp server
+创建一个连接，返回传输和协议
 ```python
 async def create_connection(
 		self, protocol_factory, host=None, port=None,
@@ -649,6 +649,7 @@ async def create_connection(
 	return transport, protocol
 ```
 ### async def _create_connection_transport
+根据sock和协议工厂创建连接的传输对象
 ```python
 async def _create_connection_transport(
 		self, sock, protocol_factory, ssl,
@@ -659,6 +660,7 @@ async def _create_connection_transport(
 
 	protocol = protocol_factory()
 	waiter = self.create_future()
+	# 根据参数类型创建不同的传输对象
 	if ssl:
 		sslcontext = None if isinstance(ssl, bool) else ssl
 		transport = self._make_ssl_transport(
@@ -680,36 +682,19 @@ async def _create_connection_transport(
 ```python
 async def sendfile(self, transport, file, offset=0, count=None,
 				   *, fallback=True):
-	"""Send a file to transport.
-
-	Return the total number of bytes which were sent.
-
-	The method uses high-performance os.sendfile if available.
-
-	file must be a regular file object opened in binary mode.
-
-	offset tells from where to start reading the file. If specified,
-	count is the total number of bytes to transmit as opposed to
-	sending the file until EOF is reached. File position is updated on
-	return or also in case of error in which case file.tell()
-	can be used to figure out the number of bytes
-	which were sent.
-
-	fallback set to True makes asyncio to manually read and send
-	the file when the platform does not support the sendfile syscall
-	(e.g. Windows or SSL socket on Unix).
-
-	Raise SendfileNotAvailableError if the system does not support
-	sendfile syscall and fallback is False.
-	"""
+	“”“
+	向传输发送文件，必须是二进制模式打开的文件对象，offset标识开始的位置，count不是发送文件的大小，而是一次发送多少字节
+	”“”
 	if transport.is_closing():
 		raise RuntimeError("Transport is closing")
+	# 根据模式判断传输对象是否支持文件传输
 	mode = getattr(transport, '_sendfile_compatible',
 				   constants._SendfileMode.UNSUPPORTED)
 	if mode is constants._SendfileMode.UNSUPPORTED:
 		raise RuntimeError(
 			f"sendfile is not supported for transport {transport!r}")
 	if mode is constants._SendfileMode.TRY_NATIVE:
+		#尝试通过本地发送文件
 		try:
 			return await self._sendfile_native(transport, file,
 											   offset, count)
@@ -721,7 +706,7 @@ async def sendfile(self, transport, file, offset=0, count=None,
 		raise RuntimeError(
 			f"fallback is disabled and native sendfile is not "
 			f"supported for transport {transport!r}")
-
+	#另一种发送文件的方式
 	return await self._sendfile_fallback(transport, file,
 										 offset, count)
 ```
@@ -739,6 +724,7 @@ async def _sendfile_fallback(self, transp, file, offset, count):
 	blocksize = min(count, 16384) if count else 16384
 	buf = bytearray(blocksize)
 	total_sent = 0
+	# 发送文件的协议
 	proto = _SendfileFallbackProtocol(transp)
 	try:
 		while True:
@@ -759,6 +745,7 @@ async def _sendfile_fallback(self, transp, file, offset, count):
 		await proto.restore()
 ```
 ### async def start_tls
+一个使用tls的传输
 ```python
 async def start_tls(self, transport, protocol, sslcontext, *,
 					server_side=False,
@@ -769,19 +756,23 @@ async def start_tls(self, transport, protocol, sslcontext, *,
 	Return a new transport that *protocol* should start using
 	immediately.
 	"""
+	# 检查是否支持ssl
 	if ssl is None:
 		raise RuntimeError('Python ssl module is not available')
 
+	# 检查ssl上下文
 	if not isinstance(sslcontext, ssl.SSLContext):
 		raise TypeError(
 			f'sslcontext is expected to be an instance of ssl.SSLContext, '
 			f'got {sslcontext!r}')
 
+	# 检查传输是否被tls支持
 	if not getattr(transport, '_start_tls_compatible', False):
 		raise TypeError(
 			f'transport {transport!r} is not supported by start_tls()')
 
 	waiter = self.create_future()
+	# 创建一个ssl协议对象
 	ssl_protocol = sslproto.SSLProtocol(
 		self, protocol, sslcontext, waiter,
 		server_side, server_hostname,
@@ -791,9 +782,11 @@ async def start_tls(self, transport, protocol, sslcontext, *,
 	# Pause early so that "ssl_protocol.data_received()" doesn't
 	# have a chance to get called before "ssl_protocol.connection_made()".
 	transport.pause_reading()
-
+	# 给传输设置一个新的协议
 	transport.set_protocol(ssl_protocol)
+	# 初始化
 	conmade_cb = self.call_soon(ssl_protocol.connection_made, transport)
+	# 注册传输套接字可读
 	resume_cb = self.call_soon(transport.resume_reading)
 
 	try:
@@ -807,6 +800,7 @@ async def start_tls(self, transport, protocol, sslcontext, *,
 	return ssl_protocol._app_transport
 ```
 ### async def create_datagram_endpoint
+创建一个报文连接
 ```python
 async def create_datagram_endpoint(self, protocol_factory,
 								   local_addr=None, remote_addr=None, *,
@@ -915,6 +909,7 @@ async def create_datagram_endpoint(self, protocol_factory,
 
 	protocol = protocol_factory()
 	waiter = self.create_future()
+	# 创建报文传输
 	transport = self._make_datagram_transport(
 		sock, protocol, r_addr, waiter)
 	if self._debug:
@@ -950,6 +945,7 @@ async def _ensure_resolved(self, address, *,
 									  proto=proto, flags=flags)
 ```
 ### async def _create_server_getaddrinfo
+
 ```python
 async def _create_server_getaddrinfo(self, host, port, family, flags):
 	infos = await self._ensure_resolved((host, port), family=family,
@@ -960,6 +956,7 @@ async def _create_server_getaddrinfo(self, host, port, family, flags):
 	return infos
 ```
 ### async def create_server
+创建一个TCP服务器
 ```python
 async def create_server(
 		self, protocol_factory, host=None, port=None,
@@ -1079,6 +1076,7 @@ async def create_server(
 	return server
 ```
 ### async def connect_accepted_socket
+处理一个被接受的连接
 ```python
 async def connect_accepted_socket(
 		self, protocol_factory, sock,
@@ -1110,6 +1108,7 @@ async def connect_accepted_socket(
 	return transport, protocol
 ```
 ### async def connect_read_pipe
+连接到一个读取的管道，返回传输和协议
 ```python
 async def connect_read_pipe(self, protocol_factory, pipe):
 	protocol = protocol_factory()
@@ -1128,6 +1127,7 @@ async def connect_read_pipe(self, protocol_factory, pipe):
 	return transport, protocol
 ```
 ### async def connect_write_pipe
+连接到一个写管道，返回传输和协议
 ```python
 async def connect_write_pipe(self, protocol_factory, pipe):
 	protocol = protocol_factory()
@@ -1223,48 +1223,24 @@ async def subprocess_exec(self, protocol_factory, program, *args,
 	return transport, protocol
 ```
 ### def get_exception_handler
+返回异常处理程序
 ```python
 def get_exception_handler(self):
-	"""Return an exception handler, or None if the default one is in use.
-	"""
 	return self._exception_handler
 ```
 ### def set_exception_handler
+设置异常处理程序
 ```python
 def set_exception_handler(self, handler):
-	"""Set handler as the new event loop exception handler.
-
-	If handler is None, the default exception handler will
-	be set.
-
-	If handler is a callable object, it should have a
-	signature matching '(loop, context)', where 'loop'
-	will be a reference to the active event loop, 'context'
-	will be a dict object (see `call_exception_handler()`
-	documentation for details about context).
-	"""
 	if handler is not None and not callable(handler):
 		raise TypeError(f'A callable object or None is expected, '
 						f'got {handler!r}')
 	self._exception_handler = handler
 ```
 ### def default_exception_handler
+默认的异常处理程序
 ```python
 def default_exception_handler(self, context):
-	"""Default exception handler.
-
-	This is called when an exception occurs and no exception
-	handler is set, and can be called by a custom exception
-	handler that wants to defer to the default behavior.
-
-	This default handler logs the error message and other
-	context-dependent information.  In debug mode, a truncated
-	stack trace is also appended showing where the given object
-	(e.g. a handle or future or task) was created, if any.
-
-	The context parameter has the same meaning as in
-	`call_exception_handler()`.
-	"""
 	message = context.get('message')
 	if not message:
 		message = 'Unhandled exception in event loop'
@@ -1301,6 +1277,7 @@ def default_exception_handler(self, context):
 	logger.error('\n'.join(log_lines), exc_info=exc_info)
 ```
 ### def call_exception_handler
+调用异常调度器
 ```python
 def call_exception_handler(self, context):
 	"""Call the current event loop's exception handler.
@@ -1354,6 +1331,7 @@ def call_exception_handler(self, context):
 							 exc_info=True)
 ```
 ### def _add_callback
+添加一个handle对象到ready队列
 ```python
 def _add_callback(self, handle):
 	"""Add a Handle to _scheduled (TimerHandle) or _ready."""
@@ -1364,6 +1342,7 @@ def _add_callback(self, handle):
 	self._ready.append(handle)
 ```
 ### def _add_callback_signalsafe
+从信号处理器调用的
 ```python
 def _add_callback_signalsafe(self, handle):
 	"""Like _add_callback() but called from a signal handler."""
@@ -1371,6 +1350,7 @@ def _add_callback_signalsafe(self, handle):
 	self._write_to_self()
 ```
 ### def _timer_handle_cancelled
+定时的handle被取消时调用
 ```python
 def _timer_handle_cancelled(self, handle):
 	"""Notification that a TimerHandle has been cancelled."""
@@ -1378,31 +1358,29 @@ def _timer_handle_cancelled(self, handle):
 		self._timer_cancelled_count += 1
 ```
 ### def _run_once
+运行一次完整的事件循环
 ```python
 def _run_once(self):
-	"""Run one full iteration of the event loop.
-
-	This calls all currently ready callbacks, polls for I/O,
-	schedules the resulting callbacks, and finally schedules
-	'call_later' callbacks.
-	"""
-
+	# 定时调用handle的数量
 	sched_count = len(self._scheduled)
+	# 数量大于100并且取消调用的数量超过一半，跟新列表删除所有取消的调度
 	if (sched_count > _MIN_SCHEDULED_TIMER_HANDLES and
 		self._timer_cancelled_count / sched_count >
 			_MIN_CANCELLED_TIMER_HANDLES_FRACTION):
-		# Remove delayed calls that were cancelled if their number
-		# is too high
+		# 新的定时调用handle列表
 		new_scheduled = []
 		for handle in self._scheduled:
+			# 如果已经被取消，设置调度状态为False
 			if handle._cancelled:
 				handle._scheduled = False
+			# 没有取消的加入新的列表
 			else:
 				new_scheduled.append(handle)
-
+		# 按照调用时间排序
 		heapq.heapify(new_scheduled)
 		self._scheduled = new_scheduled
 		self._timer_cancelled_count = 0
+	# 从前向后删除直到遇到第一个未取消的调度
 	else:
 		# Remove delayed calls that were cancelled from head of queue.
 		while self._scheduled and self._scheduled[0]._cancelled:
@@ -1411,13 +1389,16 @@ def _run_once(self):
 			handle._scheduled = False
 
 	timeout = None
+	# 如果有即时执行的调度，超时设置为0
 	if self._ready or self._stopping:
 		timeout = 0
+	# 如果全部都是延时执行的调度，超时设置为最近的时间
 	elif self._scheduled:
 		# Compute the desired timeout.
 		when = self._scheduled[0]._when
 		timeout = min(max(0, when - self.time()), MAXIMUM_SELECT_TIMEOUT)
 
+	# 查看是否有注册的事件可用，超时设置为 timeout
 	if self._debug and timeout != 0:
 		t0 = self.time()
 		event_list = self._selector.select(timeout)
@@ -1440,10 +1421,12 @@ def _run_once(self):
 					   timeout * 1e3, dt * 1e3)
 	else:
 		event_list = self._selector.select(timeout)
+	# 执行注册事件的回调函数
 	self._process_events(event_list)
 
 	# Handle 'later' callbacks that are ready.
 	end_time = self.time() + self._clock_resolution
+	# 把已经准备好的定时执行的handle添加到ready队列
 	while self._scheduled:
 		handle = self._scheduled[0]
 		if handle._when >= end_time:
@@ -1452,12 +1435,7 @@ def _run_once(self):
 		handle._scheduled = False
 		self._ready.append(handle)
 
-	# This is the only place where callbacks are actually *called*.
-	# All other places just add them to ready.
-	# Note: We run all currently scheduled callbacks, but not any
-	# callbacks scheduled by callbacks run this time around --
-	# they will be run the next time (after another I/O poll).
-	# Use an idiom that is thread-safe without using locks.
+	# 等待执行调度的数量
 	ntodo = len(self._ready)
 	for i in range(ntodo):
 		handle = self._ready.popleft()
@@ -1479,17 +1457,22 @@ def _run_once(self):
 	handle = None  # Needed to break cycles when an exception occurs.
 ```
 ### def _set_coroutine_origin_tracking
+设置堆栈条目数
 ```python
 def _set_coroutine_origin_tracking(self, enabled):
 	if bool(enabled) == bool(self._coroutine_origin_tracking_enabled):
 		return
-
+	# 开启debug模式
 	if enabled:
+		# 当前堆栈数量
 		self._coroutine_origin_tracking_saved_depth = (
 			sys.get_coroutine_origin_tracking_depth())
+		# 设置系统堆栈数量
 		sys.set_coroutine_origin_tracking_depth(
 			constants.DEBUG_STACK_DEPTH)
+	# 关闭调试模式
 	else:
+		# 设置系统原先的堆栈数量
 		sys.set_coroutine_origin_tracking_depth(
 			self._coroutine_origin_tracking_saved_depth)
 

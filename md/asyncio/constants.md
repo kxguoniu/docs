@@ -8,7 +8,7 @@ import enum
 # 在连接丢失之后，在多少次写入失败后记录警告信息 write()
 LOG_THRESHOLD_FOR_CONNLOST_WRITES = 5
 
-# 重试 accept() 之前等待的秒数
+# 重新监听服务器套接字之前等到的秒数
 ACCEPT_RETRY_DELAY = 1
 
 # 在调试模式中捕获的堆栈数目，数字越大，操作越慢

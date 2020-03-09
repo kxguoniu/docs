@@ -35,7 +35,7 @@ class LimitOverrunError(Exception):
         return type(self), (self.args[0], self.consumed)
 ```
 ## async def open_connection
-一个用于创建连接的包装器
+一个用于创建连接的包装器，返回读取流和写入流
 ```python
 async def open_connection(host=None, port=None, *,
                           loop=None, limit=_DEFAULT_LIMIT, **kwds):
@@ -113,7 +113,7 @@ async def start_unix_server(client_connected_cb, path=None, *,
 	return await loop.create_unix_server(factory, path, **kwds)
 ```
 ## class FlowControlMixin
-可重用流控制逻辑
+流量控制逻辑
 ### 初始化
 ```python
 class FlowControlMixin(protocols.Protocol):
@@ -124,11 +124,12 @@ class FlowControlMixin(protocols.Protocol):
             self._loop = loop
 		# 暂停状态
         self._paused = False
-		# 消耗程序
+		# 等待写入数据的协程
         self._drain_waiter = None
         self._connection_lost = False
 ```
 ### def pause_writing
+暂停协议，控制写入流停止向传输写入数据。
 ```python
 def pause_writing(self):
 	assert not self._paused
@@ -137,13 +138,14 @@ def pause_writing(self):
 		logger.debug("%r pauses writing", self)
 ```
 ### def resume_writing
+恢复协议，通知写入流可以向传输写入数据
 ```python
 def resume_writing(self):
 	assert self._paused
 	self._paused = False
 	if self._loop.get_debug():
 		logger.debug("%r resumes writing", self)
-
+	# 等待写入数据的协程
 	waiter = self._drain_waiter
 	if waiter is not None:
 		self._drain_waiter = None
@@ -151,6 +153,7 @@ def resume_writing(self):
 			waiter.set_result(None)
 ```
 ### def connection_lost
+连接丢失回调函数
 ```python
 def connection_lost(self, exc):
 	self._connection_lost = True
@@ -169,6 +172,7 @@ def connection_lost(self, exc):
 		waiter.set_exception(exc)
 ```
 ### async def _drain_helper
+写入流向传输写入数据的辅助方法，控制写入流的数据传输。
 ```python
 async def _drain_helper(self):
 	if self._connection_lost:
@@ -182,7 +186,7 @@ async def _drain_helper(self):
 	await waiter
 ```
 ## class StreamReaderProtocol
-流读取协议类，用来适配读取流和协议之间的关系。
+流读取协议类，用来控制写入流、读取流和传输之见的交互。
 ### 初始化
 ```python
 class StreamReaderProtocol(FlowControlMixin, protocols.Protocol):
@@ -192,7 +196,7 @@ class StreamReaderProtocol(FlowControlMixin, protocols.Protocol):
         self._stream_reader = stream_reader
 		# 流写入对象
         self._stream_writer = None
-		# 连接回调函数
+		# 连接回调函数，创建服务器协议对象需要设置的参数。
         self._client_connected_cb = client_connected_cb
 		# 有没有ssl
         self._over_ssl = False
@@ -200,18 +204,20 @@ class StreamReaderProtocol(FlowControlMixin, protocols.Protocol):
         self._closed = self._loop.create_future()
 ```
 ### def connection_made
+协议初始化，初始化传输时被调用。
 ```python
 def connection_made(self, transport):
 	# 给流读取对象设置传输
 	self._stream_reader.set_transport(transport)
 	# 是否使用了 ssl 协议
 	self._over_ssl = transport.get_extra_info('sslcontext') is not None
+	# 如果是服务器协议对象
 	if self._client_connected_cb is not None:
 		# 创建一个流写入对象
 		self._stream_writer = StreamWriter(transport, self,
 										   self._stream_reader,
 										   self._loop)
-		# 调用连接回调
+		# 服务器连接的回调函数，用来接收连接的数据，并返回结果。
 		res = self._client_connected_cb(self._stream_reader,
 										self._stream_writer)
 		# 如果连接回调是一个协程，包装成一个任务
@@ -219,6 +225,7 @@ def connection_made(self, transport):
 			self._loop.create_task(res)
 ```
 ### def connection_lost
+连接丢失时调用的方法
 ```python
 def connection_lost(self, exc):
 	if self._stream_reader is not None:
@@ -240,25 +247,23 @@ def connection_lost(self, exc):
 	self._stream_writer = None
 ```
 ### def data_received
-接收数据
+被传输调用，发送数据到读取流缓冲中。
 ```python
 def data_received(self, data):
 	self._stream_reader.feed_data(data)
 ```
 ### def eof_received
-接收数据结束
+被传输调用，套接字数据接收完毕。
 ```python
 def eof_received(self):
+	# 通知读取流数据接收结束。
 	self._stream_reader.feed_eof()
 	if self._over_ssl:
-		# Prevent a warning in SSLProtocol.eof_received:
-		# "returning true from eof_received()
-		# has no effect when using ssl"
 		return False
 	return True
 ```
 ### def __del__
-删除
+删除时清理方法，消费掉异常。
 ```python
 def __del__(self):
 	# Prevent reports about unhandled exceptions.
@@ -288,6 +293,7 @@ def transport(self):
 	return self._transport
 ```
 ### 调用传输的方法
+写入流通过协议调用传输的方法发送数据。
 ```python
 def write(self, data):
 	self._transport.write(data)
@@ -317,7 +323,7 @@ async def wait_closed(self):
     await self._protocol._closed
 ```
 ### async def drain
-刷新写缓冲区
+刷新传输的缓冲区，防止背压。
 ```python
 async def drain(self):
 	"""
@@ -331,12 +337,7 @@ async def drain(self):
 			raise exc
 	# 如果传输已经关闭
 	if self._transport.is_closing():
-		# Yield to the event loop so connection_lost() may be called.
-		# Without this, _drain_helper() would return
-		# immediately, and code that calls
-		#     write(...); await drain()
-		# in a loop would never call connection_lost(), so it
-		# would not see an error when the socket is closed.
+		# 放到下一次事件循环中执行，否则可能错过连接丢失的调用，不会看到关闭异常。
 		await sleep(0, loop=self._loop)
 	await self._protocol._drain_helper()
 ```
@@ -345,27 +346,24 @@ async def drain(self):
 ```python
 class StreamReader:
     def __init__(self, limit=_DEFAULT_LIMIT, loop=None):
-        # The line length limit is  a security feature;
-        # it also doubles as half the buffer limit.
-
         if limit <= 0:
             raise ValueError('Limit cannot be <= 0')
-
+		# 读取流缓冲区大小
         self._limit = limit
         if loop is None:
             self._loop = events.get_event_loop()
         else:
             self._loop = loop
-		# 缓冲区
+		# 缓冲区方法
         self._buffer = bytearray()
-		# 完成标识
+		# 接受数据完成标识
         self._eof = False
-		# A future used by _wait_for_data()
+		# 等待从读取流接收数据的用户协程
         self._waiter = None
         self._exception = None
 		# 传输
         self._transport = None
-		# 暂停状态
+		# 缓冲区控制属性
         self._paused = False
 ```
 ### def exception
@@ -375,7 +373,7 @@ def exception(self):
 	return self._exception
 ```
 ### def set_exception
-设置异常，并唤醒等待的future
+设置异常，并唤醒等待读取数据的用户协程
 ```python
 def set_exception(self, exc):
 	self._exception = exc
@@ -387,7 +385,7 @@ def set_exception(self, exc):
 			waiter.set_exception(exc)
 ```
 ### def _wakeup_waiter
-唤醒读取数据的协程
+唤醒等待读取数据的用户协程
 ```python
 def _wakeup_waiter(self):
 	"""Wakeup read*() functions waiting for data or EOF."""
@@ -398,14 +396,14 @@ def _wakeup_waiter(self):
 			waiter.set_result(None)
 ```
 ### def set_transport
-设置传输
+被协议调用，设置传输。
 ```python
 def set_transport(self, transport):
 	assert self._transport is None, 'Transport already set'
 	self._transport = transport
 ```
 ### def _maybe_resume_transport
-尝试读取数据到缓冲区
+通知传输可以读取套接字数据到当前缓冲区。
 ```python
 def _maybe_resume_transport(self):
 	if self._paused and len(self._buffer) <= self._limit:
@@ -413,21 +411,21 @@ def _maybe_resume_transport(self):
 		self._transport.resume_reading()
 ```
 ### def feed_eof
-读取结束
+传输数据读取完毕，设置结束标识，唤醒用户协程。
 ```python
 def feed_eof(self):
 	self._eof = True
 	self._wakeup_waiter()
 ```
 ### def at_eof
-如果缓冲区为空并且读取结束，返回真
+传输读取数据完毕并且用户已经把数据接受完毕返回真
 ```python
 def at_eof(self):
 	"""Return True if the buffer is empty and 'feed_eof' was called."""
 	return self._eof and not self._buffer
 ```
 ### def feed_data
-把传输读取到的数据放到缓冲区中，并唤醒读取数据的协程
+把传输读取到的数据放到缓冲区中，并唤醒读取数据的用户协程
 ```python
 def feed_data(self, data):
 	assert not self._eof, 'feed_data after feed_eof'
@@ -454,14 +452,7 @@ def feed_data(self, data):
 等待从流中读取数据
 ```python
 async def _wait_for_data(self, func_name):
-	"""Wait until feed_data() or feed_eof() is called.
-
-	If stream was paused, automatically resume it.
-	"""
-	# StreamReader uses a future to link the protocol feed_data() method
-	# to a read coroutine. Running two read coroutines at the same time
-	# would have an unexpected behaviour. It would not possible to know
-	# which coroutine would get the next data.
+	# 如果等待读取的协程已经存在抛出异常
 	if self._waiter is not None:
 		raise RuntimeError(
 			f'{func_name}() called while another coroutine is '
@@ -469,7 +460,7 @@ async def _wait_for_data(self, func_name):
 
 	assert not self._eof, '_wait_for_data after EOF'
 
-	# Waiting for data while paused will make deadlock, so prevent it.
+	# 暂停时等待数据会导致死锁
 	# This is essential for readexactly(n) for case when n > self._limit.
 	if self._paused:
 		self._paused = False
@@ -482,6 +473,7 @@ async def _wait_for_data(self, func_name):
 		self._waiter = None
 ```
 ### async def readline
+读取一行数据
 ```python
 async def readline(self):
 	sep = b'\n'
@@ -501,27 +493,10 @@ async def readline(self):
 	return line
 ```
 ### async def readuntil
+读取数据直到遇到分隔符或这抛出异常。
 ```python
 async def readuntil(self, separator=b'\n'):
-	"""Read data from the stream until ``separator`` is found.
-
-	On success, the data and separator will be removed from the
-	internal buffer (consumed). Returned data will include the
-	separator at the end.
-
-	Configured stream limit is used to check result. Limit sets the
-	maximal length of data that can be returned, not counting the
-	separator.
-
-	If an EOF occurs and the complete separator is still not found,
-	an IncompleteReadError exception will be raised, and the internal
-	buffer will be reset.  The IncompleteReadError.partial attribute
-	may contain the separator partially.
-
-	If the data cannot be read because of over limit, a
-	LimitOverrunError exception  will be raised, and the data
-	will be left in the internal buffer, so it can be read again.
-	"""
+	# 分隔符的长度
 	seplen = len(separator)
 	if seplen == 0:
 		raise ValueError('Separator should be at least one-byte string')
@@ -529,93 +504,50 @@ async def readuntil(self, separator=b'\n'):
 	if self._exception is not None:
 		raise self._exception
 
-	# Consume whole buffer except last bytes, which length is
-	# one less than seplen. Let's check corner cases with
-	# separator='SEPARATOR':
-	# * we have received almost complete separator (without last
-	#   byte). i.e buffer='some textSEPARATO'. In this case we
-	#   can safely consume len(separator) - 1 bytes.
-	# * last byte of buffer is first byte of separator, i.e.
-	#   buffer='abcdefghijklmnopqrS'. We may safely consume
-	#   everything except that last byte, but this require to
-	#   analyze bytes of buffer that match partial separator.
-	#   This is slow and/or require FSM. For this case our
-	#   implementation is not optimal, since require rescanning
-	#   of data that is known to not belong to separator. In
-	#   real world, separator will not be so long to notice
-	#   performance problems. Even when reading MIME-encoded
-	#   messages :)
-
-	# `offset` is the number of bytes from the beginning of the buffer
-	# where there is no occurrence of `separator`.
+	# 偏移量
 	offset = 0
 
-	# Loop until we find `separator` in the buffer, exceed the buffer size,
-	# or an EOF has happened.
+	# 循环直到我们在缓冲区找到分隔符或者出现EOF或者超过limit限制。
 	while True:
 		buflen = len(self._buffer)
 
-		# Check if we now have enough data in the buffer for `separator` to
-		# fit.
+		# 检查缓冲区是否有足够的数据去寻找分隔符
 		if buflen - offset >= seplen:
 			isep = self._buffer.find(separator, offset)
-
+			# 找到了分隔符，跳出循环。
 			if isep != -1:
-				# `separator` is in the buffer. `isep` will be used later
-				# to retrieve the data.
 				break
 
-			# see upper comment for explanation.
+			# 设置新的偏移量
 			offset = buflen + 1 - seplen
+			# 偏移量大于限制抛出异常，数据还在缓冲区可以再次读取。
 			if offset > self._limit:
 				raise LimitOverrunError(
 					'Separator is not found, and chunk exceed the limit',
 					offset)
 
-		# Complete message (with full separator) may be present in buffer
-		# even when EOF flag is set. This may happen when the last chunk
-		# adds data which makes separator be found. That's why we check for
-		# EOF *ater* inspecting the buffer.
+		# 如果传输数据已经结束仍没有找到标识符，把缓冲区的数据随异常一起抛出，清空缓冲区。
 		if self._eof:
 			chunk = bytes(self._buffer)
 			self._buffer.clear()
 			raise IncompleteReadError(chunk, None)
 
-		# _wait_for_data() will resume reading if stream was paused.
+		# 等待缓冲区数据更新
 		await self._wait_for_data('readuntil')
 
 	if isep > self._limit:
 		raise LimitOverrunError(
 			'Separator is found, but chunk is longer than limit', isep)
-
+	# 找到标识符，清除缓冲区部分数据，返回结果。
 	chunk = self._buffer[:isep + seplen]
 	del self._buffer[:isep + seplen]
 	self._maybe_resume_transport()
 	return bytes(chunk)
 ```
 ### async def read
+读取指定字节的长度的数据。默认读取所有，不受limit限制。
 ```python
 async def read(self, n=-1):
-	"""Read up to `n` bytes from the stream.
-
-	If n is not provided, or set to -1, read until EOF and return all read
-	bytes. If the EOF was received and the internal buffer is empty, return
-	an empty bytes object.
-
-	If n is zero, return empty bytes object immediately.
-
-	If n is positive, this function try to read `n` bytes, and may return
-	less or equal bytes than requested, but at least one byte. If EOF was
-	received before any byte is read, this function returns empty byte
-	object.
-
-	Returned value is not limited with limit, configured at stream
-	creation.
-
-	If stream was paused, this function will automatically resume it if
-	needed.
-	"""
-
 	if self._exception is not None:
 		raise self._exception
 
@@ -623,11 +555,8 @@ async def read(self, n=-1):
 		return b''
 
 	if n < 0:
-		# This used to just loop creating a new waiter hoping to
-		# collect everything in self._buffer, but that would
-		# deadlock if the subprocess sends more than self.limit
-		# bytes.  So just call self.read(self._limit) until EOF.
 		blocks = []
+		# 循环读取数据直到结束。
 		while True:
 			block = await self.read(self._limit)
 			if not block:
@@ -635,10 +564,10 @@ async def read(self, n=-1):
 			blocks.append(block)
 		return b''.join(blocks)
 
+	# 等待缓冲区数据更新
 	if not self._buffer and not self._eof:
 		await self._wait_for_data('read')
 
-	# This will work right even if buffer is less than n bytes
 	data = bytes(self._buffer[:n])
 	del self._buffer[:n]
 
@@ -646,22 +575,9 @@ async def read(self, n=-1):
 	return data
 ```
 ### async def readexactly
+准确的读取指定字节长度的数据。如果长度不够则缓冲区数据会随异常一起被抛出。
 ```python
 async def readexactly(self, n):
-	"""Read exactly `n` bytes.
-
-	Raise an IncompleteReadError if EOF is reached before `n` bytes can be
-	read. The IncompleteReadError.partial attribute of the exception will
-	contain the partial read bytes.
-
-	if n is zero, return empty bytes object.
-
-	Returned value is not limited with limit, configured at stream
-	creation.
-
-	If stream was paused, this function will automatically resume it if
-	needed.
-	"""
 	if n < 0:
 		raise ValueError('readexactly size can not be less than zero')
 

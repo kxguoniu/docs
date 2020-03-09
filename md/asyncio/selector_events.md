@@ -83,7 +83,7 @@ def _close_self_pipe(self):
 	self._internal_fds -= 1
 ```
 ### def _make_self_pipe
-创建管道
+创建内部使用的管道
 ```python
 def _make_self_pipe(self):
 	# 创建管道的两端
@@ -97,12 +97,13 @@ def _make_self_pipe(self):
 	self._add_reader(self._ssock.fileno(), self._read_from_self)
 ```
 ### def _process_self_data
+处理信号的方法，由子类重写。
 ```python
 def _process_self_data(self, data):
 	pass
 ```
 ### def _read_from_self
-接收来自自己的数据
+接收管道发过来的信号并调用对应的handle
 ```python
 def _read_from_self(self):
 	while True:
@@ -117,10 +118,10 @@ def _read_from_self(self):
 			break
 ```
 ### def _write_to_self
-向自己发送数据
+通过管道接收的信号已经被处理，发送通知。
 ```python
 def _write_to_self(self):
-	# 可能在不同的线程中调用，可能时正在关闭过程中调用，如果发送数据的时候连接已经关闭，会引发异常。
+	# 可能在不同的线程中调用，可能是正在关闭过程中调用，如果发送数据的时候连接已经关闭，会引发异常。
 	csock = self._csock
 	if csock is not None:
 		try:
@@ -132,7 +133,7 @@ def _write_to_self(self):
 							 exc_info=True)
 ```
 ### def _start_serving
-启动服务器
+由`Server`对象调用，开始监听套接字并处理连接的请求。
 ```python
 def _start_serving(self, protocol_factory, sock,
 				   sslcontext=None, server=None, backlog=100,
@@ -142,12 +143,14 @@ def _start_serving(self, protocol_factory, sock,
 					 ssl_handshake_timeout)
 ```
 ### def _accept_connection
+接收一个请求并处理。
 ```python
 def _accept_connection(
 		self, protocol_factory, sock,
 		sslcontext=None, server=None, backlog=100,
 		ssl_handshake_timeout=constants.SSL_HANDSHAKE_TIMEOUT):
 	# 当套接字读取事件被触发，此函数只调用一次，可能有多个连接在等待，所以在循环中处理他们。
+	# 一次处理限定数量的连接
 	for _ in range(backlog):
 		# 接收一个连接
 		try:
@@ -170,7 +173,9 @@ def _accept_connection(
 					'exception': exc,
 					'socket': sock,
 				})
+				# 删除套接字的读监听事件
 				self._remove_reader(sock.fileno())
+				# 一秒之后重新注册套接字的读取
 				self.call_later(constants.ACCEPT_RETRY_DELAY,
 								self._start_serving,
 								protocol_factory, sock, sslcontext, server,
@@ -179,12 +184,15 @@ def _accept_connection(
 				raise  # The event loop will catch, log and ignore it.
 		else:
 			extra = {'peername': addr}
+			# 创建一个处理单个连接的协程
 			accept = self._accept_connection2(
 				protocol_factory, conn, extra, sslcontext, server,
 				ssl_handshake_timeout)
+			# 创建一个task执行协程
 			self.create_task(accept)
 ```
 ### async def _accept_connection2
+具体处理服务器接受连接的方法
 ```python
 async def _accept_connection2(
 		self, protocol_factory, conn, extra,
@@ -216,6 +224,7 @@ async def _accept_connection2(
 			raise
 
 		# 现在由协议来处理连接，除了异常
+		# 协议会调用回调函数去处理读取流和写入流
 	except Exception as exc:
 		if self._debug:
 			context = {
@@ -573,15 +582,16 @@ def _sock_accept(self, fut, registered, sock):
 		fut.set_result((conn, address))
 ```
 ### async def _sendfile_native
+跳过传输直接使用套接字发送文件，被父类调用。
 ```python
 async def _sendfile_native(self, transp, file, offset, count):
 	# 删除传输的文件描述符
 	del self._transports[transp._sock_fd]
-	# 传输的继续状态
+	# 如果传输没有处于暂停状态
 	resume_reading = transp.is_reading()
 	# 传输暂停读取数据
 	transp.pause_reading()
-	# 等待传输发送完数据
+	# 等待传输发送缓冲区为空
 	await transp._make_empty_waiter()
 	# 尝试发送文件
 	try:
@@ -597,15 +607,18 @@ async def _sendfile_native(self, transp, file, offset, count):
 		self._transports[transp._sock_fd] = transp
 ```
 ### def _process_events
+处理注册的文件描述符的事件回调函数，被`loop.run_once`调用.
 ```python
 def _process_events(self, event_list):
 	for key, mask in event_list:
 		fileobj, (reader, writer) = key.fileobj, key.data
+		# 如果是注册的可读事件，删除注册，调用回调函数。
 		if mask & selectors.EVENT_READ and reader is not None:
 			if reader._cancelled:
 				self._remove_reader(fileobj)
 			else:
 				self._add_callback(reader)
+		# 如果注册的可写事件，删除注册，调用回调函数。
 		if mask & selectors.EVENT_WRITE and writer is not None:
 			if writer._cancelled:
 				self._remove_writer(fileobj)
@@ -613,7 +626,7 @@ def _process_events(self, event_list):
 				self._add_callback(writer)
 ```
 ### def _stop_serving
-停止服务器
+停止 Server 服务
 ```python
 def _stop_serving(self, sock):
 	# 删除可读事件监控，不在接受请求。关闭套接字。
@@ -654,6 +667,7 @@ class _SelectorTransport(transports._FlowControlMixin,
 		# 设置传输的协议
         self.set_protocol(protocol)
 
+		# 服务器对象，标识是不是服务器的传输对象
         self._server = server
 		# 缓冲区对象
         self._buffer = self._buffer_factory()
@@ -661,12 +675,14 @@ class _SelectorTransport(transports._FlowControlMixin,
         self._conn_lost = 0  # Set when call to connection_lost scheduled.
         # 传输关闭状态
 		self._closing = False  # Set when close() called.
+		# 如果是服务器的传输对象，连接数增加一
         if self._server is not None:
             self._server._attach()
 		# 在 loop 中注册自己
         loop._transports[self._sock_fd] = self
 ```
 ### def abort
+强制关闭
 ```python
 def abort(self):
 	self._force_close(None)
@@ -716,6 +732,7 @@ def __del__(self):
 		self._sock.close()
 ```
 ### def _fatal_error
+致命的错误，强制关闭传输。
 ```python
 def _fatal_error(self, exc, message='Fatal error on transport'):
 	# 只能从异常处理器调用
@@ -764,12 +781,13 @@ def _call_connection_lost(self, exc):
 		self._protocol = None
 		self._loop = None
 		server = self._server
-		# 关闭server
+		# 如果是服务器的传输对象，服务器连接对象减一
 		if server is not None:
 			server._detach()
 			self._server = None
 ```
 ### def get_write_buffer_size
+获取传输写缓冲区当前的大小
 ```python
 def get_write_buffer_size(self):
 	return len(self._buffer)
@@ -799,7 +817,7 @@ class _SelectorSocketTransport(_SelectorTransport):
         self._eof = False
 		# 暂停状态
         self._paused = False
-		#
+		# 传输套接字被占用发送文件
         self._empty_waiter = None
 
         # Disable the Nagle algorithm -- small writes will be
@@ -807,7 +825,7 @@ class _SelectorSocketTransport(_SelectorTransport):
         # decreases the latency (in some cases significantly.)
         base_events._set_nodelay(self._sock)
 
-		# 连接协议
+		# 连接协议初始化
         self._loop.call_soon(self._protocol.connection_made, self)
 		# 添加可读事件
         self._loop.call_soon(self._add_reader,
@@ -818,10 +836,9 @@ class _SelectorSocketTransport(_SelectorTransport):
                                  waiter, None)
 ```
 ### def set_protocol
-设置协议
+设置协议，根据协议类型选择接收套接字数据的方法
 ```python
 def set_protocol(self, protocol):
-	# 如果是缓冲区协议的实例设置可读回调
 	if isinstance(protocol, protocols.BufferedProtocol):
 		self._read_ready_cb = self._read_ready__get_buffer
 	else:
@@ -835,7 +852,7 @@ def is_reading(self):
 	return not self._paused and not self._closing
 ```
 ### def pause_reading
-暂停读取数据
+暂停传输从套接字读取数据
 ```python
 def pause_reading(self):
 	if self._closing or self._paused:
@@ -848,7 +865,7 @@ def pause_reading(self):
 		logger.debug("%r pauses reading", self)
 ```
 ### def resume_reading
-恢复可读状态
+恢复传输从套接字读取数据
 ```python
 def resume_reading(self):
 	if self._closing or not self._paused:
@@ -861,7 +878,7 @@ def resume_reading(self):
 		logger.debug("%r resumes reading", self)
 ```
 ### def _read_ready
-可读事件调用的函数
+套接字数据可读回调的方法
 ```python
 def _read_ready(self):
 	self._read_ready_cb()
@@ -920,7 +937,7 @@ def _read_ready__data_received(self):
 	if not data:
 		self._read_ready__on_eof()
 		return
-	# 把数据发送到协议
+	# 把数据通过协议发送到读取流
 	try:
 		self._protocol.data_received(data)
 	except Exception as exc:
@@ -928,7 +945,7 @@ def _read_ready__data_received(self):
 			exc, 'Fatal error: protocol.data_received() call failed.')
 ```
 ### def _read_ready__on_eof
-数据读取完毕
+套接字数据读取完毕
 ```python
 def _read_ready__on_eof(self):
 	if self._loop.get_debug():
@@ -948,7 +965,7 @@ def _read_ready__on_eof(self):
 		self.close()
 ```
 ### def write
-写入数据
+传输向套接字发送数据
 ```python
 def write(self, data):
 	# 数据必须是字节数据或者缓存数据
@@ -990,7 +1007,7 @@ def write(self, data):
 
 	# 把要发送的数据添加到缓冲区
 	self._buffer.extend(data)
-	# 数据可能超过缓冲区最大限制，暂停协议写入数据
+	# 检查是否需要暂停协议，阻止写入流向传输发送数据
 	self._maybe_pause_protocol()
 ```
 ### def _write_ready
@@ -1015,13 +1032,13 @@ def _write_ready(self):
 		# 从缓冲区删除发送的数据
 		if n:
 			del self._buffer[:n]
-		# 缓冲区数据可能小于最低限制，开启协议写入数据
+		# 检查传输是否可以接收数据
 		self._maybe_resume_protocol()  # May append to buffer.
 		# 如果缓冲区数据为空
 		if not self._buffer:
 			# 删除可写事件文件描述符
 			self._loop._remove_writer(self._sock_fd)
-			# 如果是写入文件，设置结果
+			# 唤醒需要使用套接字发送文件的协程
 			if self._empty_waiter is not None:
 				self._empty_waiter.set_result(None)
 			# 如果传输关闭
@@ -1038,7 +1055,7 @@ def write_eof(self):
 		return
 	# 设置写结束标识符
 	self._eof = True
-	# 如果没有缓冲区数据，关闭写连接。否则等缓冲区数据发送完毕再写入。
+	# 如果没有缓冲区数据，写入完毕。否则等缓冲区数据发送完毕再写入。
 	if not self._buffer:
 		self._sock.shutdown(socket.SHUT_WR)
 ```
@@ -1048,15 +1065,17 @@ def can_write_eof(self):
 	return True
 ```
 ### def _call_connection_lost
+连接丢失回调函数
 ```python
 def _call_connection_lost(self, exc):
 	super()._call_connection_lost(exc)
-	# 文件发送不为空
+	# 如果传输套接字正在发送文件
 	if self._empty_waiter is not None:
 		self._empty_waiter.set_exception(
 			ConnectionError("Connection is closed by peer"))
 ```
 ### def _make_empty_waiter
+等待传输写缓冲区为空就暂停传输向套接字发送数据，因为文件传输要占用。
 ```python
 def _make_empty_waiter(self):
 	if self._empty_waiter is not None:
@@ -1069,11 +1088,13 @@ def _make_empty_waiter(self):
 	return self._empty_waiter
 ```
 ### def _reset_empty_waiter
+文件发送完毕，取消限制
 ```python
 def _reset_empty_waiter(self):
 	self._empty_waiter = None
 ```
 ## class _SelectorDatagramTransport
+### 初始化
 ```python
 class _SelectorDatagramTransport(_SelectorTransport):
 	# 数据缓冲在队列中
@@ -1101,7 +1122,7 @@ def get_write_buffer_size(self):
 	return sum(len(data) for data, _ in self._buffer)
 ```
 ### def _read_ready
-可读回调方法
+套接字可读回调函数
 ```python
 def _read_ready(self):
 	if self._conn_lost:
@@ -1115,12 +1136,12 @@ def _read_ready(self):
 		self._protocol.error_received(exc)
 	except Exception as exc:
 		self._fatal_error(exc, 'Fatal read error on datagram transport')
-	# 把接收到的数据发送给协议
+	# 把接受到的数据通过协议发送给读取流
 	else:
 		self._protocol.datagram_received(data, addr)
 ```
 ### def sendto
-发送数据
+报文传输发送数据
 ```python
 def sendto(self, data, addr=None):
 	if not isinstance(data, (bytes, bytearray, memoryview)):
@@ -1164,7 +1185,7 @@ def sendto(self, data, addr=None):
 	self._maybe_pause_protocol()
 ```
 ### def _sendto_ready
-发送数据的方法
+发送缓冲区中的数据
 ```python
 def _sendto_ready(self):
 	# 如果缓冲区存在数据

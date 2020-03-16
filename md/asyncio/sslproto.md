@@ -54,14 +54,14 @@ def ssl_object(self):
 	return self._sslobj
 ```
 ### def need_ssldata
-连接需要的数据
+需要等待获取数据
 ```python
 @property
 def need_ssldata(self):
 	return self._need_ssldata
 ```
 ### def wrapped
-当前连接是否已经完成
+ssl握手是否已经完成
 ```python
 @property
 def wrapped(self):
@@ -87,7 +87,7 @@ def do_handshake(self, callback=None):
 	return ssldata
 ```
 ### def shutdown
-关闭 ssl，完成时调用回调函数
+关闭 ssl，连接关闭完成时调用回调函数
 ```python
 def shutdown(self, callback=None):
 	# 关闭ssl， 返回ssldata列表
@@ -106,7 +106,7 @@ def shutdown(self, callback=None):
 	return ssldata
 ```
 ### def feed_eof
-发送结束
+底层传输调用方法通知数据接收完毕。
 ```python
 def feed_eof(self):
 	self._incoming.write_eof()
@@ -114,7 +114,7 @@ def feed_eof(self):
 	assert appdata == [] or appdata == [b'']
 ```
 ### def feed_ssldata
-通过ssl发送数据
+底层传输调用，接受加密的数据，经过ssl解密后发送给应用
 ```python
 def feed_ssldata(self, data, only_handshake=False):
 	# 将 ssl 记录级数据输入到管道中，数据是bytes实例
@@ -235,7 +235,7 @@ class _SSLProtocolTransport(transports._FlowControlMixin,
         self._closed = False
 ```
 ### def get_extra_info
-获取传输的额外信息
+获取底层传输的额外信息
 ```python
 def get_extra_info(self, name, default=None):
 	return self._ssl_protocol._get_extra_info(name, default)
@@ -253,21 +253,20 @@ def get_protocol(self):
 	return self._ssl_protocol._app_protocol
 ```
 ### def is_closing
-传输是否关闭
+ssl传输是否关闭
 ```python
 def is_closing(self):
 	return self._closed
 ```
 ### def close
-设置传输关闭状态，调用ssl协议的方法关闭
+设置ssl传输关闭状态，调用ssl协议的方法关闭
 ```python
 def close(self):
 	# 关闭传输，不再接受数据，现有数据将异步刷新，数据发送完毕调用协议的连接丢失
 	self._closed = True
 	self._ssl_protocol._start_shutdown()
 ```
-### 调用ssl协议中传输的方法
-获取传输是否正在读取数据
+### 调用ssl协议中底层传输的方法
 ```python
 def is_reading(self):
 	tr = self._ssl_protocol._transport
@@ -379,7 +378,7 @@ def _set_app_protocol(self, app_protocol):
 		isinstance(app_protocol, protocols.BufferedProtocol)
 ```
 ### def _wakeup_waiter
-唤醒被阻塞的协程
+唤醒被阻塞的协程，表示ssl连接已经建立或者出现异常
 ```python
 def _wakeup_waiter(self, exc=None):
 	if self._waiter is None:

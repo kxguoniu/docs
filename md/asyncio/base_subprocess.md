@@ -69,7 +69,7 @@ def get_protocol(self):
 	return self._protocol
 ```
 ### def is_closing
-获取传输的状态
+获取进程传输的状态
 ```python
 def is_closing(self):
 	return self._closed
@@ -114,7 +114,7 @@ def get_returncode(self):
 	return self._returncode
 ```
 ### def get_pipe_transport
-获取指定的管道(in,out,err)
+获取进程指定的管道(in,out,err)
 ```python
 def get_pipe_transport(self, fd):
 	if fd in self._pipes:
@@ -150,7 +150,7 @@ def kill(self):
 	self._proc.kill()
 ```
 ### async def _connect_pipes
-使用协议包装进程的三个管道
+使用进程管道协议包装进程的三个管道
 ```python
 async def _connect_pipes(self, waiter):
 	try:

@@ -1,11 +1,6 @@
 [TOC]
-# asyncio 之 subprocess.py
 ## 摘要
-
-PIPE = subprocess.PIPE
-STDOUT = subprocess.STDOUT
-DEVNULL = subprocess.DEVNULL
-
+文件中实现了两个类，SubprocessStreamProtocol: 子进程协议，控制子进程传输的数据读写。Process: 进程包装类，实例化需要传递两个参数分别是: tansport(子进程传输对象)、 protocol(子进程协议对象)。实例化之后抛出给用户使用，有读取和写入等接口。
 ## class SubprocessStreamProtocol
 ### 初始化
 ```python
@@ -16,21 +11,22 @@ class SubprocessStreamProtocol(streams.FlowControlMixin,
         super().__init__(loop=loop)
         # 缓冲区限制大小
         self._limit = limit
-        # 进程的三个管道
+        # 进程管道被包装之后的三个流对象，用于读取和写入数据
         self.stdin = self.stdout = self.stderr = None
-        # 传输
+        # 子进程传输
         self._transport = None
         # 进程退出状态
         self._process_exited = False
+		# 管道的文件描述符列表
         self._pipe_fds = []
 ```
 ### def connection_made
-协议初始化方法
+子进程传输实例化时被调用，协议初始化方法
 ```python
 def connection_made(self, transport):
-	# 设置协议的传输
+	# 设置子进程协议的子进程传输
 	self._transport = transport
-	# 输出管道
+	# 输出管道的传输
 	stdout_transport = transport.get_pipe_transport(1)
 	if stdout_transport is not None:
 		# 输出流
@@ -38,7 +34,7 @@ def connection_made(self, transport):
 										   loop=self._loop)
 		self.stdout.set_transport(stdout_transport)
 		self._pipe_fds.append(1)
-	# 错误输出管道
+	# 错误管道的传输
 	stderr_transport = transport.get_pipe_transport(2)
 	if stderr_transport is not None:
 		# 错误流
@@ -46,7 +42,7 @@ def connection_made(self, transport):
 										   loop=self._loop)
 		self.stderr.set_transport(stderr_transport)
 		self._pipe_fds.append(2)
-	# 输入管道
+	# 输入管道的传输
 	stdin_transport = transport.get_pipe_transport(0)
 	if stdin_transport is not None:
 		# 输入流
@@ -71,6 +67,7 @@ def pipe_data_received(self, fd, data):
 		reader.feed_data(data)
 ```
 ### def pipe_connection_lost
+管道连接丢失的回调方法
 ```python
 def pipe_connection_lost(self, fd, exc):
 	# 根据管道类型选择
@@ -115,17 +112,21 @@ def _maybe_close_transport(self):
 		self._transport.close()
 		self._transport = None
 ```
-
 ## class Process
 ### 初始化
 ```python
 class Process:
     def __init__(self, transport, protocol, loop):
+		# 子进程传输
         self._transport = transport
+		# 子进程协议
         self._protocol = protocol
         self._loop = loop
+		# 子进程输入流
         self.stdin = protocol.stdin
+		# 子进程输出流
         self.stdout = protocol.stdout
+		# 子进程错误流
         self.stderr = protocol.stderr
         # 传输的进程id
         self.pid = transport.get_pid()
@@ -138,13 +139,13 @@ def returncode(self):
 	return self._transport.get_returncode()
 ```
 ### async def wait
-等待传输退出并返回退出码
+等待子进程传输退出并返回进程退出码
 ```python
 async def wait(self):
 	return await self._transport._wait()
 ```
 ### def send_signal
-通过传输发送一个信号
+通过子进程传输发送一个信号
 ```python
 def send_signal(self, signal):
 	self._transport.send_signal(signal)
@@ -162,7 +163,7 @@ def kill(self):
 	self._transport.kill()
 ```
 ### async def _feed_stdin
-通过输入管道向进程发送数据
+通过进程输入流向进程发送数据
 ```python
 async def _feed_stdin(self, input):
 	debug = self._loop.get_debug()

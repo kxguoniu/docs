@@ -1,6 +1,6 @@
 [TOC]
-# asyncio 之 streams.py
 ## 摘要
+文件实现了创建连接、创建server的方法。和流控制逻辑(用于协议)类、流读取协议类、流读取类和流写入类。流读取和流写入类的实例化对象是返回给用户使用的一对对象，他们使用相同的协议和传输。
 ## class IncompleteReadError
 ```python
 class IncompleteReadError(EOFError):

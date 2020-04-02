@@ -1,7 +1,6 @@
 [TOC]
-# asyncio 之 sslproto.py
 ## 摘要
-
+与ssl相关的类在这个文件中。`SSLPipe`控制ssl的连接和断开，对数据的加密和解密等。`SSLProtocolTransport`ssl传输类，控制数据的接受和发送。`SSLProtocol`ssl协议类，协调ssl与上层app协议和底层传输之间的数据交互。
 ## def _create_transport_context
 创建传输的ssl上下文，只有客户端的传输才可以使用
 ```python
@@ -14,8 +13,8 @@ def _create_transport_context(server_side, server_hostname):
         sslcontext.check_hostname = False
     return sslcontext
 ```
-
 ## class _SSLPipe
+`sslpipe`在协议中被实例化，主要作用是控制ssl的握手，断开。对数据的加密和解密。
 ### 初始化
 ```python
 class _SSLPipe(object):
@@ -491,7 +490,7 @@ def eof_received(self):
 		self._transport.close()
 ```
 ### def _get_extra_info
-获取额外的信息
+获取底层传输的信息
 ```python
 def _get_extra_info(self, name, default=None):
 	# 获取额外的数据

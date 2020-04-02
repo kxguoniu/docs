@@ -1,9 +1,7 @@
 [TOC]
-# asyncio 之 selectors.py
 ## 摘要
-`selectors` 在 `select` 模块的基础上进行了一次封装。可以根据系统环境选择当前平台的最优实现。并且在注册的时候添加了一个新的属性`data`，`data`可以是任何类型的数据，但通常我们都会把它作为一个回调函数来使用。
-`selectors` 选择的顺序则是 `kqueue` -> `epoll` -> `devpoll` -> `poll` -> `select`。
-
+`selectors` 在 `select` 模块的基础上进行了再次封装。可以根据系统环境选择当前平台的最优实现。并且在注册的时候添加了一个新的属性`data`，`data`可以是任何类型的数据，但通常我们都会把它作为一个回调函数来使用。
+`selectors` 检索的顺序则是 `kqueue` -> `epoll` -> `devpoll` -> `poll` -> `select`。
 ## 文件内置属性和方法
 ```python
 # 可读事件
@@ -27,8 +25,8 @@ def _fileobj_to_fd(fileobj):
     return fd
 ```
 ## class _SelectorMapping
-文件对象与选择器的映射关系
-`_SelectorMapping`实例化对象作为选择器的一个属性存在，功能是判断已注册文件描述符的数量、获取文件对象注册的信息等。
+文件对象与`SelectorKey`的映射关系
+`_SelectorMapping`实例化对象作为选择器的一个属性存在，功能是判断已注册文件描述符的数量、获取文件对象注册的信息等。作为对外暴露的一个只读属性存在。
 ```python
 class _SelectorMapping(Mapping):
     """Mapping of file objects to selector keys."""

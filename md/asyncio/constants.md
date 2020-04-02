@@ -1,6 +1,6 @@
 [TOC]
-# asyncio 之 constants.py
 ## 摘要
+`asyncio`的配置文件
 ## 内容
 ```python
 import enum
@@ -11,7 +11,7 @@ LOG_THRESHOLD_FOR_CONNLOST_WRITES = 5
 # 重新监听服务器套接字之前等到的秒数
 ACCEPT_RETRY_DELAY = 1
 
-# 在调试模式中捕获的堆栈数目，数字越大，操作越慢
+# 在调试模式中捕获的堆栈数目，数字越大，执行越慢
 # (see extract_stack() in format_helpers.py).
 DEBUG_STACK_DEPTH = 10
 

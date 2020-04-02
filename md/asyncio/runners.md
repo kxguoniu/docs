@@ -1,7 +1,6 @@
 [TOC]
-# asyncio 之 runners.py
 ## 摘要
-本文件中只有一个`run`函数用于安全的执行一个协程。可以通过 asyncio.run()调用。
+本文件中只有一个`run`方法用于安全的执行一个协程。可以通过 asyncio.run()调用。该方法会自动创建默认`event_loop`执行协程，执行完毕后关闭`event_loop`。
 ## def run
 ```python
 def run(main, *, debug=False):

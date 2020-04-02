@@ -1,7 +1,6 @@
 [TOC]
-# asyncio 之 select_events.py
 ## 摘要
-
+作为承上(base_events)启下(unix_events or windows_events)的文件，实现了基础选择器事件循环类(类中实现的方法大多都是与传输和管道相关的)，和套接字传输类以及报文传输类的实现。
 ## class BaseSelectorEventLoop
 基础的选择器事件循环
 ### 初始化

@@ -1,5 +1,6 @@
 [TOC]
 ## 摘要
+这个文件中定义了两个`task`的帮助方法，用于获取或者输出`task`的堆栈。
 ### 获取task堆栈列表
 ```python
 def _task_get_stack(task, limit):

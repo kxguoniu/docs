@@ -1,7 +1,6 @@
 [TOC]
-# asyncio 之 base_subprocess.py
 ## 摘要
-
+文件中实现了三个类。写管道协议(stdin)，读管道协议(stdout、stderr)，和基础管道传输类。协议用来控制管道数据的写入和读取，传输则是对进程对象以及进程三个管道(包括管道的协议和传输)对象的管理。进程的创建则是在子类中实现。
 ## class BaseSubprocessTransport
 ### 初始化
 ```python
@@ -11,14 +10,20 @@ class BaseSubprocessTransport(transports.SubprocessTransport):
                  stdin, stdout, stderr, bufsize,
                  waiter=None, extra=None, **kwargs):
         super().__init__(extra)
+		# 进程传输的状态
         self._closed = False
+		# 进程协议
         self._protocol = protocol
         self._loop = loop
+		# 进程对象
         self._proc = None
+		# 进程pid
         self._pid = None
+		# 进程退出码
         self._returncode = None
         self._exit_waiters = []
         self._pending_calls = collections.deque()
+		# key： 管道描述符， value： 管道包装的协议(并不是管道本身)
         self._pipes = {}
         self._finished = False
 
@@ -29,7 +34,7 @@ class BaseSubprocessTransport(transports.SubprocessTransport):
         if stderr == subprocess.PIPE:
             self._pipes[2] = None
 
-        # 创建子进程，设置属性
+        # 创建子进程，在子类中实现
         try:
             self._start(args=args, shell=shell, stdin=stdin, stdout=stdout,
                         stderr=stderr, bufsize=bufsize, **kwargs)
@@ -57,13 +62,13 @@ def _start(self, args, shell, stdin, stdout, stderr, bufsize, **kwargs):
 	raise NotImplementedError
 ```
 ### def set_protocol
-设置协议
+设置协议(进程的协议)
 ```python
 def set_protocol(self, protocol):
 	self._protocol = protocol
 ```
 ### def get_protocol
-获取协议
+获取协议(进程)
 ```python
 def get_protocol(self):
 	return self._protocol
@@ -101,9 +106,9 @@ def close(self):
 		except ProcessLookupError:
 			pass
 ```
- ### def get_pid
- 获取传输的进程id
- ```python
+### def get_pid
+获取进程id
+```python
 def get_pid(self):
 	return self._pid
 ```
@@ -123,6 +128,7 @@ def get_pipe_transport(self, fd):
 		return None
 ```
 ### def _check_proc
+检查进程对象是否存在
 ```python
 def _check_proc(self):
 	if self._proc is None:
@@ -150,13 +156,14 @@ def kill(self):
 	self._proc.kill()
 ```
 ### async def _connect_pipes
-使用进程管道协议包装进程的三个管道
+使用进程管道协议和传输包装进程的三个管道
 ```python
 async def _connect_pipes(self, waiter):
 	try:
 		proc = self._proc
 		loop = self._loop
 
+		# 包装管道，返回传输(传输类在最上层的events文件中实现)和协议
 		if proc.stdin is not None:
 			_, pipe = await loop.connect_write_pipe(
 				lambda: WriteSubprocessPipeProto(self, 0),

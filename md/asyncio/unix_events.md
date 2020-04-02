@@ -1,6 +1,6 @@
 [TOC]
-# asyncio 之 unix_events.py
 ## 摘要
+这是最接近最终实现文件,实现了适用于Unix的事件循环类(主要是信号处理和子进程以及进程监视器相关的方法)，用于进程管道的读写传输类、用于进程的传输类、用于进程监视的类、以及一个默认的事件循环策略类。
 ## class _UnixSelectorEventLoop
 ### 初始化
 ```python

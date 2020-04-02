@@ -1,4 +1,241 @@
 [TOC]
+## 摘要
+基础的事件循环类实现文件(主要是循环运行，创建任务，添加运行任务相关的方法)，还有一个文件发送专用的的协议类以及一个服务器类的实现。
+## class _SendfileFallbackProtocol
+发送文件的协议，只有第三种发送文件的方式才会用到这个协议
+### 初始化
+```python
+class _SendfileFallbackProtocol(protocols.Protocol):
+    def __init__(self, transp):
+        if not isinstance(transp, transports._FlowControlMixin):
+            raise TypeError("transport should be _FlowControlMixin instance")
+		# 流传输
+        self._transport = transp
+		# 传输现在使用的协议
+        self._proto = transp.get_protocol()
+		# 传输的读取数据的状态
+        self._should_resume_reading = transp.is_reading()
+		# 传输发送数据的状态
+        self._should_resume_writing = transp._protocol_paused
+		# 传输暂停从套接字中接受数据
+        transp.pause_reading()
+		# 设置传输的协议为发送文件专用协议
+        transp.set_protocol(self)
+		# 如果传输正处于暂停写入数据状态
+        if self._should_resume_writing:
+            self._write_ready_fut = self._transport._loop.create_future()
+        else:
+            self._write_ready_fut = None
+```
+### async def drain
+判断传输写入是否准备好
+```python
+async def drain(self):
+	if self._transport.is_closing():
+		raise ConnectionError("Connection closed by peer")
+	fut = self._write_ready_fut
+	if fut is None:
+		return
+	await fut
+```
+### def connection_made
+```python
+def connection_made(self, transport):
+	raise RuntimeError("Invalid state: "
+					   "connection should have been established already.")
+
+```
+### def connection_lost
+```python
+def connection_lost(self, exc):
+	if self._write_ready_fut is not None:
+		if exc is None:
+			self._write_ready_fut.set_exception(
+				ConnectionError("Connection is closed by peer"))
+		else:
+			self._write_ready_fut.set_exception(exc)
+	self._proto.connection_lost(exc)
+```
+### def pause_writing
+暂停发送文件
+```python
+def pause_writing(self):
+	if self._write_ready_fut is not None:
+		return
+	self._write_ready_fut = self._transport._loop.create_future()
+```
+### def resume_writing
+继续发送文件
+```python
+def resume_writing(self):
+	if self._write_ready_fut is None:
+		return
+	self._write_ready_fut.set_result(False)
+	self._write_ready_fut = None
+```
+### def data_received
+发送文件是数据接收应该被暂停
+```python
+def data_received(self, data):
+	raise RuntimeError("Invalid state: reading should be paused")
+
+def eof_received(self):
+	raise RuntimeError("Invalid state: reading should be paused")
+```
+### async def restore
+```python
+async def restore(self):
+	self._transport.set_protocol(self._proto)
+	if self._should_resume_reading:
+		self._transport.resume_reading()
+	if self._write_ready_fut is not None:
+		# Cancel the future.
+		# Basically it has no effect because protocol is switched back,
+		# no code should wait for it anymore.
+		self._write_ready_fut.cancel()
+	if self._should_resume_writing:
+		self._proto.resume_writing()
+```
+## class Server
+### 初始化
+```python
+class Server(events.AbstractServer):
+
+    def __init__(self, loop, sockets, protocol_factory, ssl_context, backlog,
+                 ssl_handshake_timeout):
+        self._loop = loop
+		# 服务器套接字列表
+        self._sockets = sockets
+		# 活跃的连接数
+        self._active_count = 0
+		# 等待服务器关闭的协程
+        self._waiters = []
+		# 连接协议
+        self._protocol_factory = protocol_factory
+        self._backlog = backlog
+		# ssl上下文
+        self._ssl_context = ssl_context
+		# ssl 握手超时时间
+        self._ssl_handshake_timeout = ssl_handshake_timeout
+		# 服务器状态
+        self._serving = False
+		# 服务其运行是设置的future
+        self._serving_forever_fut = None
+```
+### def _attach
+连接数加一
+```python
+def _attach(self):
+	assert self._sockets is not None
+	self._active_count += 1
+```
+### def _detach
+连接数减一
+```python
+def _detach(self):
+	assert self._active_count > 0
+	self._active_count -= 1
+	if self._active_count == 0 and self._sockets is None:
+		self._wakeup()
+```
+### def _wakeup
+```python
+def _wakeup(self):
+	waiters = self._waiters
+	self._waiters = None
+	for waiter in waiters:
+		if not waiter.done():
+			waiter.set_result(waiter)
+```
+### def _start_serving
+启动服务器
+```python
+def _start_serving(self):
+	if self._serving:
+		return
+	self._serving = True
+	for sock in self._sockets:
+		sock.listen(self._backlog)
+		self._loop._start_serving(
+			self._protocol_factory, sock, self._ssl_context,
+			self, self._backlog, self._ssl_handshake_timeout)
+```
+### def sockets
+```python
+def get_loop(self):
+	return self._loop
+
+def is_serving(self):
+	return self._serving
+
+@property
+def sockets(self):
+	if self._sockets is None:
+		return []
+	return list(self._sockets)
+```
+### def close
+关闭服务器
+```python
+def close(self):
+	sockets = self._sockets
+	if sockets is None:
+		return
+	self._sockets = None
+
+	for sock in sockets:
+		self._loop._stop_serving(sock)
+
+	self._serving = False
+
+	if (self._serving_forever_fut is not None and
+			not self._serving_forever_fut.done()):
+		self._serving_forever_fut.cancel()
+		self._serving_forever_fut = None
+
+	if self._active_count == 0:
+		self._wakeup()
+```
+### async def start_serving
+```python
+    async def start_serving(self):
+        self._start_serving()
+		# 跳过一次事件循环，这样所有的套接字都已经被注册
+        await tasks.sleep(0, loop=self._loop)
+```
+### asyncio def serve_forever
+
+```python
+async def serve_forever(self):
+	if self._serving_forever_fut is not None:
+		raise RuntimeError(
+			f'server {self!r} is already being awaited on serve_forever()')
+	if self._sockets is None:
+		raise RuntimeError(f'server {self!r} is closed')
+
+	self._start_serving()
+	self._serving_forever_fut = self._loop.create_future()
+
+	try:
+		await self._serving_forever_fut
+	except futures.CancelledError:
+		try:
+			self.close()
+			await self.wait_closed()
+		finally:
+			raise
+	finally:
+		self._serving_forever_fut = None
+```
+### async def wait_closed
+```python
+async def wait_closed(self):
+	if self._sockets is None or self._waiters is None:
+		return
+	waiter = self._loop.create_future()
+	self._waiters.append(waiter)
+	await waiter
+```
 ## class BaseEventLoop
 ### 初始化
 ```python

@@ -1,6 +1,6 @@
 [TOC]
-# asyncio 之 format_helpers.py
 ## 摘要
+`format_helpers`打印log的帮助函数，主要作用是寻找方法所在的位置或者输出方法执行时的语句。通过日志可以了解到程序执行了那个方法，方法所在的位置以及执行方法时传入的参数等。
 ## def _get_function_source
 返回函数所在的文件名，以及在文件中的行号
 ```python

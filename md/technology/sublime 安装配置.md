@@ -1,5 +1,6 @@
-# sublime 安装配置(ubuntu)
-
+[TOC]
+## 摘要
+`Sublime Text`具有漂亮的用户界面和强大的功能，例如代码缩略图，`Python`插件，代码段等。还可以自定义键绑定，菜单和工具栏。`Sublime Text`的主要功能包括：拼写检查，书签，完整的`Python API`，`GOTO`功能，即时项目切换，多选择，多窗口等等。`Sublime Text`是一个跨平台的编译器，同时支持`Windows`、`Linux`、`Mac OSX`等操作系统。  --来自百度百科
 ## 下载
 进入sublime官网点击Linux64位下载(根据自己的系统选择)，[下载地址](http://www.sublimetext.com/3)。
 ![](../image/sublime/sublime_1.jpg)
@@ -18,7 +19,7 @@
 
 ## 支持中文
 点击 preferences -> package control -> install package 输入 localizedMenu 点击安装
-![](../image/sublime/sublime_5.jpg)
+![](../image/sublime/sublime_5.jpg)  
 安装完成后点击 preferences -> languages -> 简体中文
 ![](../image/sublime/sublime_6.jpg)
 
@@ -247,11 +248,11 @@
 ```
 保存后关闭sublime重新打开
 点击 工具 -> SublimeREPL 可以看到
-![](../image/sublime_9.jpg)
+![](../image/sublime/sublime_9.jpg)
 ### 设置快捷键
 点击 设置 -> 快捷键设置  添加如图内容就可以使用快捷键执行python脚本了
-![](../image/sublime/sublime_10.jpg)
-测试结果如图所示
+![](../image/sublime/sublime_10.jpg)  
+测试结果如图所示  
 ![](../image/sublime/sublime_11.jpg)
 ## python语法提示，跳转
 ### 安装插件 SublimeCodeIntel
@@ -349,11 +350,11 @@
 该配置和python2的配置相同
 ### 安装插件
 点击 设置 -> Package Control -> Install Package 输入  python
-![](../image/sublime/sublime_13.jpg)
-安装之后sublime就可以支持python 3 语法
+![](../image/sublime/sublime_13.jpg)  
+安装之后sublime就可以支持python 3 语法  
 ![](../image/sublime/sublime_14.jpg)
 ### 切换语法
-使用的时候注意切换语法，语法在右下角设置。
+使用的时候注意切换语法，语法在右下角设置。  
 ![](../image/sublime/sublime_15.jpg)
 ## git 支持
 ### 安装 sublime Merge

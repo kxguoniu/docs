@@ -45,7 +45,8 @@ class Error(Exception):
 
     pass
 
-
+## class OptionParser
+```python
 class OptionParser(object):
     def __init__(self) -> None:
         # we have to use self.__dict__ because we override setattr.
@@ -222,8 +223,8 @@ class OptionParser(object):
         if final:
             self.run_parse_callbacks()
 
+    # 打印所有选项的帮助信息
     def print_help(self, file: TextIO = None) -> None:
-        """Prints all the command line options to stderr (or another file)."""
         if file is None:
             file = sys.stderr
         print("Usage: %s [OPTIONS]" % sys.argv[0], file=file)
@@ -252,50 +253,28 @@ class OptionParser(object):
                     print("%-34s %s" % (" ", line), file=file)
         print(file=file)
 
+    # 打印帮助信息并退出
     def _help_callback(self, value: bool) -> None:
         if value:
             self.print_help()
             sys.exit(0)
 
+    # 添加一个解析回调，在完成解析时调用
     def add_parse_callback(self, callback: Callable[[], None]) -> None:
-        """Adds a parse callback, to be invoked when option parsing is done."""
         self._parse_callbacks.append(callback)
 
+    # 运行解析回调方法
     def run_parse_callbacks(self) -> None:
         for callback in self._parse_callbacks:
             callback()
 
     def mockable(self) -> "_Mockable":
-        """Returns a wrapper around self that is compatible with
-        `mock.patch <unittest.mock.patch>`.
-
-        The `mock.patch <unittest.mock.patch>` function (included in
-        the standard library `unittest.mock` package since Python 3.3,
-        or in the third-party ``mock`` package for older versions of
-        Python) is incompatible with objects like ``options`` that
-        override ``__getattr__`` and ``__setattr__``.  This function
-        returns an object that can be used with `mock.patch.object
-        <unittest.mock.patch.object>` to modify option values::
-
-            with mock.patch.object(options.mockable(), 'name', value):
-                assert options.name == value
-        """
         return _Mockable(self)
+```
 
-
+## class _Mockable
+```python
 class _Mockable(object):
-    """`mock.patch` compatible wrapper for `OptionParser`.
-
-    As of ``mock`` version 1.0.1, when an object uses ``__getattr__``
-    hooks instead of ``__dict__``, ``patch.__exit__`` tries to delete
-    the attribute it set instead of setting a new one (assuming that
-    the object does not catpure ``__setattr__``, so the patch
-    created a new attribute in ``__dict__``).
-
-    _Mockable's getattr and setattr pass through to the underlying
-    OptionParser, and delattr undoes the effect of a previous setattr.
-    """
-
     def __init__(self, options: OptionParser) -> None:
         # Modify __dict__ directly to bypass __setattr__
         self.__dict__["_options"] = options
@@ -311,12 +290,12 @@ class _Mockable(object):
 
     def __delattr__(self, name: str) -> None:
         setattr(self._options, name, self._originals.pop(name))
+```
 
-
+## class _Option
+每一个选项都是一个 Option 实例
+```python
 class _Option(object):
-    # This class could almost be made generic, but the way the types
-    # interact with the multiple argument makes this tricky. (default
-    # and the callback use List[T], but type is still Type[T]).
     UNSET = object()
 
     def __init__(
@@ -333,23 +312,36 @@ class _Option(object):
     ) -> None:
         if default is None and multiple:
             default = []
+        # 选项名称
         self.name = name
         if type is None:
             raise ValueError("type must not be None")
+        # 选项类型
         self.type = type
+        # 选项的帮助
         self.help = help
+        # 
         self.metavar = metavar
+        # 选项是否是列表类型
         self.multiple = multiple
+        # 选项定义的文件名称
         self.file_name = file_name
+        # 选项所属的组
         self.group_name = group_name
+        # 选项改变回调方法
         self.callback = callback
+        # 选项的默认值
         self.default = default
+        # 选项的值
         self._value = _Option.UNSET  # type: Any
 
+    # 返回选项的值
     def value(self) -> Any:
         return self.default if self._value is _Option.UNSET else self._value
 
+    # 解析选项设置值的类型
     def parse(self, value: str) -> Any:
+        # 解析的值类型的方法
         _parse = {
             datetime.datetime: self._parse_datetime,
             datetime.timedelta: self._parse_timedelta,
@@ -358,9 +350,11 @@ class _Option(object):
         }.get(
             self.type, self.type
         )  # type: Callable[[str], Any]
+        # 如果选项是一个列表参数
         if self.multiple:
             self._value = []
             for part in value.split(","):
+                # 如果是数值类型可以使用  1:10  类似 range(1,10)
                 if issubclass(self.type, numbers.Integral):
                     # allow ranges of the form X:Y (inclusive at both ends)
                     lo_str, _, hi_str = part.partition(":")
@@ -371,10 +365,12 @@ class _Option(object):
                     self._value.append(_parse(part))
         else:
             self._value = _parse(value)
+        # 执行可能存在的回调方法
         if self.callback is not None:
             self.callback(self._value)
         return self.value()
 
+    # 设置选项的值
     def set(self, value: Any) -> None:
         if self.multiple:
             if not isinstance(value, list):
@@ -395,10 +391,11 @@ class _Option(object):
                     % (self.name, self.type.__name__, type(value))
                 )
         self._value = value
+        # 执行可能存在的回调方法
         if self.callback is not None:
             self.callback(self._value)
 
-    # Supported date/time formats in our options
+    # 支持的日期和时间格式
     _DATETIME_FORMATS = [
         "%a %b %d %H:%M:%S %Y",
         "%Y-%m-%d %H:%M:%S",
@@ -412,6 +409,7 @@ class _Option(object):
         "%H:%M",
     ]
 
+    # 解析时间/日期类型的数据
     def _parse_datetime(self, value: str) -> datetime.datetime:
         for format in self._DATETIME_FORMATS:
             try:
@@ -438,6 +436,7 @@ class _Option(object):
         r"\s*(%s)\s*(\w*)\s*" % _FLOAT_PATTERN, re.IGNORECASE
     )
 
+    # 解析 timedelta 类型时间
     def _parse_timedelta(self, value: str) -> datetime.timedelta:
         try:
             sum = datetime.timedelta()
@@ -455,20 +454,20 @@ class _Option(object):
         except Exception:
             raise
 
+    # 解析 bool 类型数据
     def _parse_bool(self, value: str) -> bool:
         return value.lower() not in ("false", "0", "f")
 
+    # 解析字符串类型数据
     def _parse_string(self, value: str) -> str:
         return _unicode(value)
+```
 
-
+# 单例对象
 options = OptionParser()
-"""Global options object.
 
-All defined options are available as attributes on this object.
-"""
-
-
+# 全局定义的方法
+```python
 def define(
     name: str,
     default: Any = None,
@@ -479,10 +478,6 @@ def define(
     group: str = None,
     callback: Callable[[Any], None] = None,
 ) -> None:
-    """Defines an option in the global namespace.
-
-    See `OptionParser.define`.
-    """
     return options.define(
         name,
         default=default,
@@ -494,38 +489,18 @@ def define(
         callback=callback,
     )
 
-
 def parse_command_line(args: List[str] = None, final: bool = True) -> List[str]:
-    """Parses global options from the command line.
-
-    See `OptionParser.parse_command_line`.
-    """
     return options.parse_command_line(args, final=final)
 
-
 def parse_config_file(path: str, final: bool = True) -> None:
-    """Parses global options from a config file.
-
-    See `OptionParser.parse_config_file`.
-    """
     return options.parse_config_file(path, final=final)
 
-
 def print_help(file: TextIO = None) -> None:
-    """Prints all the command line options to stderr (or another file).
-
-    See `OptionParser.print_help`.
-    """
     return options.print_help(file)
 
-
 def add_parse_callback(callback: Callable[[], None]) -> None:
-    """Adds a parse callback, to be invoked when option parsing is done.
-
-    See `OptionParser.add_parse_callback`
-    """
     options.add_parse_callback(callback)
-
+```
 
 # Default options
 define_logging_options(options)

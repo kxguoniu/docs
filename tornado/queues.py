@@ -33,11 +33,11 @@ from tornado import gen, ioloop
 from tornado.concurrent import Future, future_set_result_unless_cancelled
 from tornado.locks import Event
 
-from typing import Union, TypeVar, Generic, Awaitable
+from typing import Union, TypeVar, Generic, Awaitable, Optional
 import typing
 
 if typing.TYPE_CHECKING:
-    from typing import Deque, Tuple, List, Any  # noqa: F401
+    from typing import Deque, Tuple, Any  # noqa: F401
 
 _T = TypeVar("_T")
 
@@ -85,7 +85,7 @@ class Queue(Generic[_T]):
 
     .. testcode::
 
-        from tornado import gen
+        import asyncio
         from tornado.ioloop import IOLoop
         from tornado.queues import Queue
 
@@ -95,7 +95,7 @@ class Queue(Generic[_T]):
             async for item in q:
                 try:
                     print('Doing work on %s' % item)
-                    await gen.sleep(0.01)
+                    await asyncio.sleep(0.01)
                 finally:
                     q.task_done()
 
@@ -111,7 +111,7 @@ class Queue(Generic[_T]):
             await q.join()       # Wait for consumer to finish all tasks.
             print('Done')
 
-        IOLoop.current().run_sync(main)
+        asyncio.run(main())
 
     .. testoutput::
 
@@ -184,7 +184,7 @@ class Queue(Generic[_T]):
             return self.qsize() >= self.maxsize
 
     def put(
-        self, item: _T, timeout: Union[float, datetime.timedelta] = None
+        self, item: _T, timeout: Optional[Union[float, datetime.timedelta]] = None
     ) -> "Future[None]":
         """Put an item into the queue, perhaps waiting until there is room.
 
@@ -222,7 +222,9 @@ class Queue(Generic[_T]):
         else:
             self.__put_internal(item)
 
-    def get(self, timeout: Union[float, datetime.timedelta] = None) -> Awaitable[_T]:
+    def get(
+        self, timeout: Optional[Union[float, datetime.timedelta]] = None
+    ) -> Awaitable[_T]:
         """Remove and return an item from the queue.
 
         Returns an awaitable which resolves once an item is available, or raises
@@ -287,7 +289,9 @@ class Queue(Generic[_T]):
         if self._unfinished_tasks == 0:
             self._finished.set()
 
-    def join(self, timeout: Union[float, datetime.timedelta] = None) -> Awaitable[None]:
+    def join(
+        self, timeout: Optional[Union[float, datetime.timedelta]] = None
+    ) -> Awaitable[None]:
         """Block until all items in the queue are processed.
 
         Returns an awaitable, which raises `tornado.util.TimeoutError` after a
@@ -324,13 +328,13 @@ class Queue(Generic[_T]):
             self._getters.popleft()
 
     def __repr__(self) -> str:
-        return "<%s at %s %s>" % (type(self).__name__, hex(id(self)), self._format())
+        return f"<{type(self).__name__} at {hex(id(self))} {self._format()}>"
 
     def __str__(self) -> str:
-        return "<%s %s>" % (type(self).__name__, self._format())
+        return f"<{type(self).__name__} {self._format()}>"
 
     def _format(self) -> str:
-        result = "maxsize=%r" % (self.maxsize,)
+        result = f"maxsize={self.maxsize!r}"
         if getattr(self, "_queue", None):
             result += " queue=%r" % self._queue
         if self._getters:
@@ -349,16 +353,20 @@ class PriorityQueue(Queue):
 
     .. testcode::
 
+        import asyncio
         from tornado.queues import PriorityQueue
 
-        q = PriorityQueue()
-        q.put((1, 'medium-priority item'))
-        q.put((0, 'high-priority item'))
-        q.put((10, 'low-priority item'))
+        async def main():
+            q = PriorityQueue()
+            q.put((1, 'medium-priority item'))
+            q.put((0, 'high-priority item'))
+            q.put((10, 'low-priority item'))
 
-        print(q.get_nowait())
-        print(q.get_nowait())
-        print(q.get_nowait())
+            print(await q.get())
+            print(await q.get())
+            print(await q.get())
+
+        asyncio.run(main())
 
     .. testoutput::
 
@@ -373,7 +381,7 @@ class PriorityQueue(Queue):
     def _put(self, item: _T) -> None:
         heapq.heappush(self._queue, item)
 
-    def _get(self) -> _T:
+    def _get(self) -> _T:  # type: ignore[type-var]
         return heapq.heappop(self._queue)
 
 
@@ -382,16 +390,20 @@ class LifoQueue(Queue):
 
     .. testcode::
 
+        import asyncio
         from tornado.queues import LifoQueue
 
-        q = LifoQueue()
-        q.put(3)
-        q.put(2)
-        q.put(1)
+        async def main():
+            q = LifoQueue()
+            q.put(3)
+            q.put(2)
+            q.put(1)
 
-        print(q.get_nowait())
-        print(q.get_nowait())
-        print(q.get_nowait())
+            print(await q.get())
+            print(await q.get())
+            print(await q.get())
+
+        asyncio.run(main())
 
     .. testoutput::
 
@@ -406,5 +418,5 @@ class LifoQueue(Queue):
     def _put(self, item: _T) -> None:
         self._queue.append(item)
 
-    def _get(self) -> _T:
+    def _get(self) -> _T:  # type: ignore[type-var]
         return self._queue.pop()

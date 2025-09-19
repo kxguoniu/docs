@@ -18,7 +18,8 @@
 import collections
 import functools
 import logging
-import pycurl  # type: ignore
+import pycurl
+import re
 import threading
 import time
 from io import BytesIO
@@ -36,21 +37,24 @@ from tornado.httpclient import (
 )
 from tornado.log import app_log
 
-from typing import Dict, Any, Callable, Union
+from typing import Dict, Any, Callable, Union, Optional
 import typing
 
 if typing.TYPE_CHECKING:
-    from typing import Deque, Tuple, Optional  # noqa: F401
+    from typing import Deque, Tuple  # noqa: F401
 
 curl_log = logging.getLogger("tornado.curl_httpclient")
+
+CR_OR_LF_RE = re.compile(b"\r|\n")
 
 
 class CurlAsyncHTTPClient(AsyncHTTPClient):
     def initialize(  # type: ignore
-        self, max_clients: int = 10, defaults: Dict[str, Any] = None
+        self, max_clients: int = 10, defaults: Optional[Dict[str, Any]] = None
     ) -> None:
-        super(CurlAsyncHTTPClient, self).initialize(defaults=defaults)
-        self._multi = pycurl.CurlMulti()
+        super().initialize(defaults=defaults)
+        # Typeshed is incomplete for CurlMulti, so just use Any for now.
+        self._multi = pycurl.CurlMulti()  # type: Any
         self._multi.setopt(pycurl.M_TIMERFUNCTION, self._set_timeout)
         self._multi.setopt(pycurl.M_SOCKETFUNCTION, self._handle_socket)
         self._curls = [self._curl_create() for i in range(max_clients)]
@@ -86,7 +90,7 @@ class CurlAsyncHTTPClient(AsyncHTTPClient):
         for curl in self._curls:
             curl.close()
         self._multi.close()
-        super(CurlAsyncHTTPClient, self).close()
+        super().close()
 
         # Set below properties to None to reduce the reference count of current
         # instance, because those properties hold some methods of current
@@ -219,18 +223,22 @@ class CurlAsyncHTTPClient(AsyncHTTPClient):
                 started += 1
                 curl = self._free_list.pop()
                 (request, callback, queue_start_time) = self._requests.popleft()
-                curl.info = {
+                # TODO: Don't smuggle extra data on an attribute of the Curl object.
+                curl.info = {  # type: ignore
                     "headers": httputil.HTTPHeaders(),
                     "buffer": BytesIO(),
                     "request": request,
                     "callback": callback,
                     "queue_start_time": queue_start_time,
                     "curl_start_time": time.time(),
-                    "curl_start_ioloop_time": self.io_loop.current().time(),
+                    "curl_start_ioloop_time": self.io_loop.current().time(),  # type: ignore
                 }
                 try:
                     self._curl_setup_request(
-                        curl, request, curl.info["buffer"], curl.info["headers"]
+                        curl,
+                        request,
+                        curl.info["buffer"],  # type: ignore
+                        curl.info["headers"],  # type: ignore
                     )
                 except Exception as e:
                     # If there was an error in setup, pass it on
@@ -250,10 +258,13 @@ class CurlAsyncHTTPClient(AsyncHTTPClient):
                 break
 
     def _finish(
-        self, curl: pycurl.Curl, curl_error: int = None, curl_message: str = None
+        self,
+        curl: pycurl.Curl,
+        curl_error: Optional[int] = None,
+        curl_message: Optional[str] = None,
     ) -> None:
-        info = curl.info
-        curl.info = None
+        info = curl.info  # type: ignore
+        curl.info = None  # type: ignore
         self._multi.remove_handle(curl)
         self._free_list.append(curl)
         buffer = info["buffer"]
@@ -339,13 +350,15 @@ class CurlAsyncHTTPClient(AsyncHTTPClient):
         if "Pragma" not in request.headers:
             request.headers["Pragma"] = ""
 
-        curl.setopt(
-            pycurl.HTTPHEADER,
-            [
-                "%s: %s" % (native_str(k), native_str(v))
-                for k, v in request.headers.get_all()
-            ],
-        )
+        encoded_headers = [
+            b"%s: %s"
+            % (native_str(k).encode("ASCII"), native_str(v).encode("ISO8859-1"))
+            for k, v in request.headers.get_all()
+        ]
+        for line in encoded_headers:
+            if CR_OR_LF_RE.search(line):
+                raise ValueError("Illegal characters in header (CR or LF): %r" % line)
+        curl.setopt(pycurl.HTTPHEADER, encoded_headers)
 
         curl.setopt(
             pycurl.HEADERFUNCTION,
@@ -361,7 +374,7 @@ class CurlAsyncHTTPClient(AsyncHTTPClient):
                 return len(b)
 
         else:
-            write_function = buffer.write
+            write_function = buffer.write  # type: ignore
         curl.setopt(pycurl.WRITEFUNCTION, write_function)
         curl.setopt(pycurl.FOLLOWLOCATION, request.follow_redirects)
         curl.setopt(pycurl.MAXREDIRS, request.max_redirects)
@@ -378,7 +391,7 @@ class CurlAsyncHTTPClient(AsyncHTTPClient):
         if request.decompress_response:
             curl.setopt(pycurl.ENCODING, "gzip,deflate")
         else:
-            curl.setopt(pycurl.ENCODING, "none")
+            curl.setopt(pycurl.ENCODING, None)
         if request.proxy_host and request.proxy_port:
             curl.setopt(pycurl.PROXY, request.proxy_host)
             curl.setopt(pycurl.PROXYPORT, request.proxy_port)
@@ -398,7 +411,10 @@ class CurlAsyncHTTPClient(AsyncHTTPClient):
                     "Unsupported proxy_auth_mode %s" % request.proxy_auth_mode
                 )
         else:
-            curl.setopt(pycurl.PROXY, "")
+            try:
+                curl.unsetopt(pycurl.PROXY)
+            except TypeError:  # not supported, disable proxy
+                curl.setopt(pycurl.PROXY, "")
             curl.unsetopt(pycurl.PROXYUSERPWD)
         if request.validate_cert:
             curl.setopt(pycurl.SSL_VERIFYPEER, 1)
@@ -432,7 +448,7 @@ class CurlAsyncHTTPClient(AsyncHTTPClient):
             "PUT": pycurl.UPLOAD,
             "HEAD": pycurl.NOBODY,
         }
-        custom_methods = set(["DELETE", "OPTIONS", "PATCH"])
+        custom_methods = {"DELETE", "OPTIONS", "PATCH"}
         for o in curl_options.values():
             curl.setopt(o, False)
         if request.method in curl_options:
@@ -469,7 +485,7 @@ class CurlAsyncHTTPClient(AsyncHTTPClient):
             request_buffer = BytesIO(utf8(request.body or ""))
 
             def ioctl(cmd: int) -> None:
-                if cmd == curl.IOCMD_RESTARTREAD:
+                if cmd == curl.IOCMD_RESTARTREAD:  # type: ignore
                     request_buffer.seek(0)
 
             curl.setopt(pycurl.READFUNCTION, request_buffer.read)
@@ -540,7 +556,9 @@ class CurlAsyncHTTPClient(AsyncHTTPClient):
         if header_line.startswith("HTTP/"):
             headers.clear()
             try:
-                (__, __, reason) = httputil.parse_response_start_line(header_line)
+                (_version, _code, reason) = httputil.parse_response_start_line(
+                    header_line
+                )
                 header_line = "X-Http-Reason: %s" % reason
             except httputil.HTTPInputError:
                 return

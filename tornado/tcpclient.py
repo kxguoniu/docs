@@ -21,25 +21,24 @@ import socket
 import numbers
 import datetime
 import ssl
+import typing
 
 from tornado.concurrent import Future, future_add_done_callback
 from tornado.ioloop import IOLoop
 from tornado.iostream import IOStream
 from tornado import gen
 from tornado.netutil import Resolver
-from tornado.platform.auto import set_close_exec
 from tornado.gen import TimeoutError
 
-import typing
-from typing import Any, Union, Dict, Tuple, List, Callable, Iterator
+from typing import Any, Union, Dict, Tuple, List, Callable, Iterator, Optional
 
 if typing.TYPE_CHECKING:
-    from typing import Optional, Set  # noqa: F401
+    from typing import Set  # noqa(F401)
 
 _INITIAL_CONNECT_TIMEOUT = 0.3
 
 
-class _Connector(object):
+class _Connector:
     """A stateless implementation of the "Happy Eyeballs" algorithm.
 
     "Happy Eyeballs" is documented in RFC6555 as the recommended practice
@@ -79,7 +78,7 @@ class _Connector(object):
 
     @staticmethod
     def split(
-        addrinfo: List[Tuple]
+        addrinfo: List[Tuple],
     ) -> Tuple[
         List[Tuple[socket.AddressFamily, Tuple]],
         List[Tuple[socket.AddressFamily, Tuple]],
@@ -105,7 +104,7 @@ class _Connector(object):
     def start(
         self,
         timeout: float = _INITIAL_CONNECT_TIMEOUT,
-        connect_timeout: Union[float, datetime.timedelta] = None,
+        connect_timeout: Optional[Union[float, datetime.timedelta]] = None,
     ) -> "Future[Tuple[socket.AddressFamily, Any, IOStream]]":
         self.try_connect(iter(self.primary_addrs))
         self.set_timeout(timeout)
@@ -200,14 +199,14 @@ class _Connector(object):
             stream.close()
 
 
-class TCPClient(object):
+class TCPClient:
     """A non-blocking TCP connection factory.
 
     .. versionchanged:: 5.0
        The ``io_loop`` argument (deprecated since version 4.1) has been removed.
     """
 
-    def __init__(self, resolver: Resolver = None) -> None:
+    def __init__(self, resolver: Optional[Resolver] = None) -> None:
         if resolver is not None:
             self.resolver = resolver
             self._own_resolver = False
@@ -224,11 +223,11 @@ class TCPClient(object):
         host: str,
         port: int,
         af: socket.AddressFamily = socket.AF_UNSPEC,
-        ssl_options: Union[Dict[str, Any], ssl.SSLContext] = None,
-        max_buffer_size: int = None,
-        source_ip: str = None,
-        source_port: int = None,
-        timeout: Union[float, datetime.timedelta] = None,
+        ssl_options: Optional[Union[Dict[str, Any], ssl.SSLContext]] = None,
+        max_buffer_size: Optional[int] = None,
+        source_ip: Optional[str] = None,
+        source_port: Optional[int] = None,
+        timeout: Optional[Union[float, datetime.timedelta]] = None,
     ) -> IOStream:
         """Connect to the given host and port.
 
@@ -300,8 +299,8 @@ class TCPClient(object):
         max_buffer_size: int,
         af: socket.AddressFamily,
         addr: Tuple,
-        source_ip: str = None,
-        source_port: int = None,
+        source_ip: Optional[str] = None,
+        source_port: Optional[int] = None,
     ) -> Tuple[IOStream, "Future[IOStream]"]:
         # Always connect in plaintext; we'll convert to ssl if necessary
         # after one connection has completed.
@@ -315,18 +314,17 @@ class TCPClient(object):
             # - 127.0.0.1 for IPv4
             # - ::1 for IPv6
         socket_obj = socket.socket(af)
-        set_close_exec(socket_obj.fileno())
         if source_port_bind or source_ip_bind:
             # If the user requires binding also to a specific IP/port.
             try:
                 socket_obj.bind((source_ip_bind, source_port_bind))
-            except socket.error:
+            except OSError:
                 socket_obj.close()
                 # Fail loudly if unable to use the IP/port.
                 raise
         try:
             stream = IOStream(socket_obj, max_buffer_size=max_buffer_size)
-        except socket.error as e:
+        except OSError as e:
             fu = Future()  # type: Future[IOStream]
             fu.set_exception(e)
             return stream, fu

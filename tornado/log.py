@@ -44,7 +44,7 @@ try:
 except ImportError:
     curses = None  # type: ignore
 
-from typing import Dict, Any, cast
+from typing import Dict, Any, cast, Optional
 
 # Logger objects for internal tornado use
 access_log = logging.getLogger("tornado.access")
@@ -110,6 +110,7 @@ class LogFormatter(logging.Formatter):
         logging.INFO: 2,  # Green
         logging.WARNING: 3,  # Yellow
         logging.ERROR: 1,  # Red
+        logging.CRITICAL: 5,  # Magenta
     }
 
     def __init__(
@@ -150,7 +151,11 @@ class LogFormatter(logging.Formatter):
                     self._colors[levelno] = unicode_type(
                         curses.tparm(fg_color, code), "ascii"
                     )
-                self._normal = unicode_type(curses.tigetstr("sgr0"), "ascii")
+                normal = curses.tigetstr("sgr0")
+                if normal is not None:
+                    self._normal = unicode_type(normal, "ascii")
+                else:
+                    self._normal = ""
             else:
                 # If curses is not present (currently we'll only get here for
                 # colorama on windows), assume hard-coded ANSI color codes.
@@ -182,7 +187,7 @@ class LogFormatter(logging.Formatter):
             # byte strings wherever possible).
             record.message = _safe_unicode(message)
         except Exception as e:
-            record.message = "Bad message (%r): %r" % (e, record.__dict__)
+            record.message = f"Bad message ({e!r}): {record.__dict__!r}"
 
         record.asctime = self.formatTime(record, cast(str, self.datefmt))
 
@@ -207,7 +212,9 @@ class LogFormatter(logging.Formatter):
         return formatted.replace("\n", "\n    ")
 
 
-def enable_pretty_logging(options: Any = None, logger: logging.Logger = None) -> None:
+def enable_pretty_logging(
+    options: Any = None, logger: Optional[logging.Logger] = None
+) -> None:
     """Turns on formatted logging output as configured.
 
     This is called automatically by `tornado.options.parse_command_line`

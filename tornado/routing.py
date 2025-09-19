@@ -142,7 +142,7 @@ Of course a nested `RuleRouter` or a `~.web.Application` is allowed:
 
     router = RuleRouter([
         Rule(HostMatches("example.com"), RuleRouter([
-            Rule(PathMatches("/app1/.*"), Application([(r"/app1/handler", Handler)]))),
+            Rule(PathMatches("/app1/.*"), Application([(r"/app1/handler", Handler)])),
         ]))
     ])
 
@@ -184,7 +184,18 @@ from tornado.escape import url_escape, url_unescape, utf8
 from tornado.log import app_log
 from tornado.util import basestring_type, import_object, re_unescape, unicode_type
 
-from typing import Any, Union, Optional, Awaitable, List, Dict, Pattern, Tuple, overload
+from typing import (
+    Any,
+    Union,
+    Optional,
+    Awaitable,
+    List,
+    Dict,
+    Pattern,
+    Tuple,
+    overload,
+    Sequence,
+)
 
 
 class Router(httputil.HTTPServerConnectionDelegate):
@@ -268,8 +279,8 @@ class _RoutingDelegate(httputil.HTTPMessageDelegate):
         self.delegate.finish()
 
     def on_connection_close(self) -> None:
-        assert self.delegate is not None
-        self.delegate.on_connection_close()
+        if self.delegate is not None:
+            self.delegate.on_connection_close()
 
 
 class _DefaultMessageDelegate(httputil.HTTPMessageDelegate):
@@ -286,7 +297,7 @@ class _DefaultMessageDelegate(httputil.HTTPMessageDelegate):
 
 # _RuleList can either contain pre-constructed Rules or a sequence of
 # arguments to be passed to the Rule constructor.
-_RuleList = List[
+_RuleList = Sequence[
     Union[
         "Rule",
         List[Any],  # Can't do detailed typechecking of lists.
@@ -300,7 +311,7 @@ _RuleList = List[
 class RuleRouter(Router):
     """Rule-based router implementation."""
 
-    def __init__(self, rules: _RuleList = None) -> None:
+    def __init__(self, rules: Optional[_RuleList] = None) -> None:
         """Constructs a router from an ordered list of rules::
 
             RuleRouter([
@@ -327,7 +338,6 @@ class RuleRouter(Router):
         :arg rules: a list of `Rule` instances or tuples of `Rule`
             constructor arguments.
         """
-        # 所有的规则列表
         self.rules = []  # type: List[Rule]
         if rules:
             self.add_rules(rules)
@@ -410,13 +420,12 @@ class ReversibleRuleRouter(ReversibleRouter, RuleRouter):
     in a rule's matcher (see `Matcher.reverse`).
     """
 
-    def __init__(self, rules: _RuleList = None) -> None:
-        # 名称和规则映射表
+    def __init__(self, rules: Optional[_RuleList] = None) -> None:
         self.named_rules = {}  # type: Dict[str, Any]
-        super(ReversibleRuleRouter, self).__init__(rules)
+        super().__init__(rules)
 
     def process_rule(self, rule: "Rule") -> "Rule":
-        rule = super(ReversibleRuleRouter, self).process_rule(rule)
+        rule = super().process_rule(rule)
 
         if rule.name:
             if rule.name in self.named_rules:
@@ -440,15 +449,15 @@ class ReversibleRuleRouter(ReversibleRouter, RuleRouter):
         return None
 
 
-class Rule(object):
+class Rule:
     """A routing rule."""
 
     def __init__(
         self,
         matcher: "Matcher",
         target: Any,
-        target_kwargs: Dict[str, Any] = None,
-        name: str = None,
+        target_kwargs: Optional[Dict[str, Any]] = None,
+        name: Optional[str] = None,
     ) -> None:
         """Constructs a Rule instance.
 
@@ -480,7 +489,7 @@ class Rule(object):
         return self.matcher.reverse(*args)
 
     def __repr__(self) -> str:
-        return "%s(%r, %s, kwargs=%r, name=%r)" % (
+        return "{}({!r}, {}, kwargs={!r}, name={!r})".format(
             self.__class__.__name__,
             self.matcher,
             self.target,
@@ -489,7 +498,7 @@ class Rule(object):
         )
 
 
-class Matcher(object):
+class Matcher:
     """Represents a matcher for request features."""
 
     def match(self, request: httputil.HTTPServerRequest) -> Optional[Dict[str, Any]]:
@@ -584,9 +593,9 @@ class PathMatches(Matcher):
         # unnamed groups, we want to use either groups
         # or groupdict but not both.
         if self.regex.groupindex:
-            path_kwargs = dict(
-                (str(k), _unquote_or_none(v)) for (k, v) in match.groupdict().items()
-            )
+            path_kwargs = {
+                str(k): _unquote_or_none(v) for (k, v) in match.groupdict().items()
+            }
         else:
             path_args = [_unquote_or_none(s) for s in match.groups()]
 
@@ -629,7 +638,13 @@ class PathMatches(Matcher):
             if ")" in fragment:
                 paren_loc = fragment.index(")")
                 if paren_loc >= 0:
-                    pieces.append("%s" + fragment[paren_loc + 1 :])
+                    try:
+                        unescaped_fragment = re_unescape(fragment[paren_loc + 1 :])
+                    except ValueError:
+                        # If we can't unescape part of it, we can't
+                        # reverse this url.
+                        return (None, None)
+                    pieces.append("%s" + unescaped_fragment)
             else:
                 try:
                     unescaped_fragment = re_unescape(fragment)
@@ -654,8 +669,8 @@ class URLSpec(Rule):
         self,
         pattern: Union[str, Pattern],
         handler: Any,
-        kwargs: Dict[str, Any] = None,
-        name: str = None,
+        kwargs: Optional[Dict[str, Any]] = None,
+        name: Optional[str] = None,
     ) -> None:
         """Parameters:
 
@@ -675,14 +690,14 @@ class URLSpec(Rule):
 
         """
         matcher = PathMatches(pattern)
-        super(URLSpec, self).__init__(matcher, handler, kwargs, name)
+        super().__init__(matcher, handler, kwargs, name)
 
         self.regex = matcher.regex
         self.handler_class = self.target
         self.kwargs = kwargs
 
     def __repr__(self) -> str:
-        return "%s(%r, %s, kwargs=%r, name=%r)" % (
+        return "{}({!r}, {}, kwargs={!r}, name={!r})".format(
             self.__class__.__name__,
             self.regex.pattern,
             self.handler_class,

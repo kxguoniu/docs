@@ -56,7 +56,7 @@ Your ``main()`` method can parse the command line or parse a config file with
 either `parse_command_line` or `parse_config_file`::
 
     import myapp.db, myapp.server
-    import tornado.options
+    import tornado
 
     if __name__ == '__main__':
         tornado.options.parse_command_line()
@@ -86,6 +86,12 @@ instances to define isolated sets of options, such as for subcommands.
        options.logging = None
        parse_command_line()
 
+.. note::
+
+   `parse_command_line` or `parse_config_file` function should called after
+   logging configuration and user-defined command line flags using the
+   ``callback`` option definition, or these configurations will not take effect.
+
 .. versionchanged:: 4.3
    Dashes and underscores are fully interchangeable in option names;
    options can be defined, set, and read with any mix of the two.
@@ -104,11 +110,18 @@ from tornado.escape import _unicode, native_str
 from tornado.log import define_logging_options
 from tornado.util import basestring_type, exec_in
 
-import typing
-from typing import Any, Iterator, Iterable, Tuple, Set, Dict, Callable, List, TextIO
-
-if typing.TYPE_CHECKING:
-    from typing import Optional  # noqa: F401
+from typing import (
+    Any,
+    Iterator,
+    Iterable,
+    Tuple,
+    Set,
+    Dict,
+    Callable,
+    List,
+    TextIO,
+    Optional,
+)
 
 
 class Error(Exception):
@@ -117,7 +130,7 @@ class Error(Exception):
     pass
 
 
-class OptionParser(object):
+class OptionParser:
     """A collection of options, a dictionary with object-like access.
 
     Normally accessed via static functions in the `tornado.options` module,
@@ -175,7 +188,7 @@ class OptionParser(object):
 
         .. versionadded:: 3.1
         """
-        return set(opt.group_name for opt in self._options.values())
+        return {opt.group_name for opt in self._options.values()}
 
     def group_dict(self, group: str) -> Dict[str, Any]:
         """The names and values of options in a group.
@@ -194,29 +207,29 @@ class OptionParser(object):
 
         .. versionadded:: 3.1
         """
-        return dict(
-            (opt.name, opt.value())
+        return {
+            opt.name: opt.value()
             for name, opt in self._options.items()
             if not group or group == opt.group_name
-        )
+        }
 
     def as_dict(self) -> Dict[str, Any]:
         """The names and values of all options.
 
         .. versionadded:: 3.1
         """
-        return dict((opt.name, opt.value()) for name, opt in self._options.items())
+        return {opt.name: opt.value() for name, opt in self._options.items()}
 
     def define(
         self,
         name: str,
         default: Any = None,
-        type: type = None,
-        help: str = None,
-        metavar: str = None,
+        type: Optional[type] = None,
+        help: Optional[str] = None,
+        metavar: Optional[str] = None,
         multiple: bool = False,
-        group: str = None,
-        callback: Callable[[Any], None] = None,
+        group: Optional[str] = None,
+        callback: Optional[Callable[[Any], None]] = None,
     ) -> None:
         """Defines a new command line option.
 
@@ -259,17 +272,22 @@ class OptionParser(object):
                 % (normalized, self._options[normalized].file_name)
             )
         frame = sys._getframe(0)
-        options_file = frame.f_code.co_filename
+        if frame is not None:
+            options_file = frame.f_code.co_filename
 
-        # Can be called directly, or through top level define() fn, in which
-        # case, step up above that frame to look for real caller.
-        if (
-            frame.f_back.f_code.co_filename == options_file
-            and frame.f_back.f_code.co_name == "define"
-        ):
-            frame = frame.f_back
+            # Can be called directly, or through top level define() fn, in which
+            # case, step up above that frame to look for real caller.
+            if (
+                frame.f_back is not None
+                and frame.f_back.f_code.co_filename == options_file
+                and frame.f_back.f_code.co_name == "define"
+            ):
+                frame = frame.f_back
 
-        file_name = frame.f_back.f_code.co_filename
+            assert frame.f_back is not None
+            file_name = frame.f_back.f_code.co_filename
+        else:
+            file_name = "<unknown>"
         if file_name == options_file:
             file_name = ""
         if type is None:
@@ -295,7 +313,7 @@ class OptionParser(object):
         self._options[normalized] = option
 
     def parse_command_line(
-        self, args: List[str] = None, final: bool = True
+        self, args: Optional[List[str]] = None, final: bool = True
     ) -> List[str]:
         """Parses all options given on the command line (defaults to
         `sys.argv`).
@@ -409,7 +427,9 @@ class OptionParser(object):
                             % (option.name, option.type.__name__)
                         )
 
-                if type(config[name]) == str and option.type != str:
+                if type(config[name]) is str and (
+                    option.type is not str or option.multiple
+                ):
                     option.parse(config[name])
                 else:
                     option.set(config[name])
@@ -417,7 +437,7 @@ class OptionParser(object):
         if final:
             self.run_parse_callbacks()
 
-    def print_help(self, file: TextIO = None) -> None:
+    def print_help(self, file: Optional[TextIO] = None) -> None:
         """Prints all the command line options to stderr (or another file)."""
         if file is None:
             file = sys.stderr
@@ -462,15 +482,11 @@ class OptionParser(object):
 
     def mockable(self) -> "_Mockable":
         """Returns a wrapper around self that is compatible with
-        `mock.patch <unittest.mock.patch>`.
+        `unittest.mock.patch`.
 
-        The `mock.patch <unittest.mock.patch>` function (included in
-        the standard library `unittest.mock` package since Python 3.3,
-        or in the third-party ``mock`` package for older versions of
-        Python) is incompatible with objects like ``options`` that
-        override ``__getattr__`` and ``__setattr__``.  This function
-        returns an object that can be used with `mock.patch.object
-        <unittest.mock.patch.object>` to modify option values::
+        The `unittest.mock.patch` function is incompatible with objects like ``options`` that
+        override ``__getattr__`` and ``__setattr__``.  This function returns an object that can be
+        used with `mock.patch.object <unittest.mock.patch.object>` to modify option values::
 
             with mock.patch.object(options.mockable(), 'name', value):
                 assert options.name == value
@@ -478,13 +494,13 @@ class OptionParser(object):
         return _Mockable(self)
 
 
-class _Mockable(object):
+class _Mockable:
     """`mock.patch` compatible wrapper for `OptionParser`.
 
     As of ``mock`` version 1.0.1, when an object uses ``__getattr__``
     hooks instead of ``__dict__``, ``patch.__exit__`` tries to delete
     the attribute it set instead of setting a new one (assuming that
-    the object does not catpure ``__setattr__``, so the patch
+    the object does not capture ``__setattr__``, so the patch
     created a new attribute in ``__dict__``).
 
     _Mockable's getattr and setattr pass through to the underlying
@@ -508,7 +524,7 @@ class _Mockable(object):
         setattr(self._options, name, self._originals.pop(name))
 
 
-class _Option(object):
+class _Option:
     # This class could almost be made generic, but the way the types
     # interact with the multiple argument makes this tricky. (default
     # and the callback use List[T], but type is still Type[T]).
@@ -518,13 +534,13 @@ class _Option(object):
         self,
         name: str,
         default: Any = None,
-        type: type = None,
-        help: str = None,
-        metavar: str = None,
+        type: Optional[type] = None,
+        help: Optional[str] = None,
+        metavar: Optional[str] = None,
         multiple: bool = False,
-        file_name: str = None,
-        group_name: str = None,
-        callback: Callable[[Any], None] = None,
+        file_name: Optional[str] = None,
+        group_name: Optional[str] = None,
+        callback: Optional[Callable[[Any], None]] = None,
     ) -> None:
         if default is None and multiple:
             default = []
@@ -644,6 +660,7 @@ class _Option(object):
                 num = float(m.group(1))
                 units = m.group(2) or "seconds"
                 units = self._TIMEDELTA_ABBREV_DICT.get(units, units)
+
                 sum += datetime.timedelta(**{units: num})
                 start = m.end()
             return sum
@@ -667,12 +684,12 @@ All defined options are available as attributes on this object.
 def define(
     name: str,
     default: Any = None,
-    type: type = None,
-    help: str = None,
-    metavar: str = None,
+    type: Optional[type] = None,
+    help: Optional[str] = None,
+    metavar: Optional[str] = None,
     multiple: bool = False,
-    group: str = None,
-    callback: Callable[[Any], None] = None,
+    group: Optional[str] = None,
+    callback: Optional[Callable[[Any], None]] = None,
 ) -> None:
     """Defines an option in the global namespace.
 
@@ -690,7 +707,9 @@ def define(
     )
 
 
-def parse_command_line(args: List[str] = None, final: bool = True) -> List[str]:
+def parse_command_line(
+    args: Optional[List[str]] = None, final: bool = True
+) -> List[str]:
     """Parses global options from the command line.
 
     See `OptionParser.parse_command_line`.
@@ -706,7 +725,7 @@ def parse_config_file(path: str, final: bool = True) -> None:
     return options.parse_config_file(path, final=final)
 
 
-def print_help(file: TextIO = None) -> None:
+def print_help(file: Optional[TextIO] = None) -> None:
     """Prints all the command line options to stderr (or another file).
 
     See `OptionParser.print_help`.

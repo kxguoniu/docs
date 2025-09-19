@@ -15,6 +15,7 @@
 
 """Miscellaneous network utility code."""
 
+import asyncio
 import concurrent.futures
 import errno
 import os
@@ -25,17 +26,12 @@ import stat
 
 from tornado.concurrent import dummy_executor, run_on_executor
 from tornado.ioloop import IOLoop
-from tornado.platform.auto import set_close_exec
 from tornado.util import Configurable, errno_from_exception
 
-import typing
-from typing import List, Callable, Any, Type, Dict, Union, Tuple, Awaitable
-
-if typing.TYPE_CHECKING:
-    from asyncio import Future  # noqa: F401
+from typing import List, Callable, Any, Type, Dict, Union, Tuple, Awaitable, Optional
 
 # Note that the naming of ssl.Purpose is confusing; the purpose
-# of a context is to authentiate the opposite side of the connection.
+# of a context is to authenticate the opposite side of the connection.
 _client_ssl_defaults = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
 _server_ssl_defaults = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
 if hasattr(ssl, "OP_NO_COMPRESSION"):
@@ -48,18 +44,10 @@ if hasattr(ssl, "OP_NO_COMPRESSION"):
 # module-import time, the import lock is already held by the main thread,
 # leading to deadlock. Avoid it by caching the idna encoder on the main
 # thread now.
-u"foo".encode("idna")
+"foo".encode("idna")
 
 # For undiagnosed reasons, 'latin1' codec may also need to be preloaded.
-u"foo".encode("latin1")
-
-# These errnos indicate that a non-blocking operation must be retried
-# at a later time.  On most platforms they're the same value, but on
-# some they differ.
-_ERRNO_WOULDBLOCK = (errno.EWOULDBLOCK, errno.EAGAIN)
-
-if hasattr(errno, "WSAEWOULDBLOCK"):
-    _ERRNO_WOULDBLOCK += (errno.WSAEWOULDBLOCK,)  # type: ignore
+"foo".encode("latin1")
 
 # Default backlog used when calling sock.listen()
 _DEFAULT_BACKLOG = 128
@@ -67,10 +55,10 @@ _DEFAULT_BACKLOG = 128
 
 def bind_sockets(
     port: int,
-    address: str = None,
+    address: Optional[str] = None,
     family: socket.AddressFamily = socket.AF_UNSPEC,
     backlog: int = _DEFAULT_BACKLOG,
-    flags: int = None,
+    flags: Optional[int] = None,
     reuse_port: bool = False,
 ) -> List[socket.socket]:
     """Creates listening sockets bound to the given port and address.
@@ -127,7 +115,7 @@ def bind_sockets(
             sys.platform == "darwin"
             and address == "localhost"
             and af == socket.AF_INET6
-            and sockaddr[3] != 0
+            and sockaddr[3] != 0  # type: ignore
         ):
             # Mac OS X includes a link-local address fe80::1%lo0 in the
             # getaddrinfo results for 'localhost'.  However, the firewall
@@ -138,15 +126,14 @@ def bind_sockets(
             continue
         try:
             sock = socket.socket(af, socktype, proto)
-        except socket.error as e:
+        except OSError as e:
             if errno_from_exception(e) == errno.EAFNOSUPPORT:
                 continue
             raise
-        set_close_exec(sock.fileno())
         if os.name != "nt":
             try:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            except socket.error as e:
+            except OSError as e:
                 if errno_from_exception(e) != errno.ENOPROTOOPT:
                     # Hurd doesn't support SO_REUSEADDR.
                     raise
@@ -171,7 +158,29 @@ def bind_sockets(
             sockaddr = tuple([host, bound_port] + list(sockaddr[2:]))
 
         sock.setblocking(False)
-        sock.bind(sockaddr)
+        try:
+            sock.bind(sockaddr)
+        except OSError as e:
+            if (
+                errno_from_exception(e) == errno.EADDRNOTAVAIL
+                and address == "localhost"
+                and sockaddr[0] == "::1"
+            ):
+                # On some systems (most notably docker with default
+                # configurations), ipv6 is partially disabled:
+                # socket.has_ipv6 is true, we can create AF_INET6
+                # sockets, and getaddrinfo("localhost", ...,
+                # AF_PASSIVE) resolves to ::1, but we get an error
+                # when binding.
+                #
+                # Swallow the error, but only for this specific case.
+                # If EADDRNOTAVAIL occurs in other situations, it
+                # might be a real problem like a typo in a
+                # configuration.
+                sock.close()
+                continue
+            else:
+                raise
         bound_port = sock.getsockname()[1]
         sock.listen(backlog)
         sockets.append(sock)
@@ -193,26 +202,30 @@ if hasattr(socket, "AF_UNIX"):
         `bind_sockets`)
         """
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        set_close_exec(sock.fileno())
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        except socket.error as e:
+        except OSError as e:
             if errno_from_exception(e) != errno.ENOPROTOOPT:
                 # Hurd doesn't support SO_REUSEADDR
                 raise
         sock.setblocking(False)
-        try:
-            st = os.stat(file)
-        except OSError as err:
-            if errno_from_exception(err) != errno.ENOENT:
-                raise
-        else:
-            if stat.S_ISSOCK(st.st_mode):
-                os.remove(file)
+        # File names comprising of an initial null-byte denote an abstract
+        # namespace, on Linux, and therefore are not subject to file system
+        # orientated processing.
+        if not file.startswith("\0"):
+            try:
+                st = os.stat(file)
+            except FileNotFoundError:
+                pass
             else:
-                raise ValueError("File %s exists and is not a socket", file)
-        sock.bind(file)
-        os.chmod(file, mode)
+                if stat.S_ISSOCK(st.st_mode):
+                    os.remove(file)
+                else:
+                    raise ValueError("File %s exists and is not a socket", file)
+            sock.bind(file)
+            os.chmod(file, mode)
+        else:
+            sock.bind(file)
         sock.listen(backlog)
         return sock
 
@@ -258,24 +271,21 @@ def add_accept_handler(
                 return
             try:
                 connection, address = sock.accept()
-            except socket.error as e:
-                # _ERRNO_WOULDBLOCK indicate we have accepted every
+            except BlockingIOError:
+                # EWOULDBLOCK indicates we have accepted every
                 # connection that is available.
-                if errno_from_exception(e) in _ERRNO_WOULDBLOCK:
-                    return
+                return
+            except ConnectionAbortedError:
                 # ECONNABORTED indicates that there was a connection
                 # but it was closed while still in the accept queue.
                 # (observed on FreeBSD).
-                if errno_from_exception(e) == errno.ECONNABORTED:
-                    continue
-                raise
-            set_close_exec(connection.fileno())
+                continue
             callback(connection, address)
 
     def remove_handler() -> None:
         io_loop.remove_handler(sock)
         removed[0] = True
-    # 添加一个可读回调
+
     io_loop.add_handler(sock, accept_handler, IOLoop.READ)
     return remove_handler
 
@@ -298,6 +308,12 @@ def is_valid_ip(ip: str) -> bool:
         if e.args[0] == socket.EAI_NONAME:
             return False
         raise
+    except UnicodeError:
+        # `socket.getaddrinfo` will raise a UnicodeError from the
+        # `idna` decoder if the input is longer than 63 characters,
+        # even for socket.AI_NUMERICHOST.  See
+        # https://bugs.python.org/issue32958 for discussion
+        return False
     return True
 
 
@@ -313,16 +329,20 @@ class Resolver(Configurable):
 
     The implementations of this interface included with Tornado are
 
-    * `tornado.netutil.DefaultExecutorResolver`
+    * `tornado.netutil.DefaultLoopResolver`
+    * `tornado.netutil.DefaultExecutorResolver` (deprecated)
     * `tornado.netutil.BlockingResolver` (deprecated)
     * `tornado.netutil.ThreadedResolver` (deprecated)
     * `tornado.netutil.OverrideResolver`
-    * `tornado.platform.twisted.TwistedResolver`
-    * `tornado.platform.caresresolver.CaresResolver`
+    * `tornado.platform.caresresolver.CaresResolver` (deprecated)
 
     .. versionchanged:: 5.0
        The default implementation has changed from `BlockingResolver` to
        `DefaultExecutorResolver`.
+
+    .. versionchanged:: 6.2
+       The default implementation has changed from `DefaultExecutorResolver` to
+       `DefaultLoopResolver`.
     """
 
     @classmethod
@@ -331,7 +351,7 @@ class Resolver(Configurable):
 
     @classmethod
     def configurable_default(cls) -> Type["Resolver"]:
-        return DefaultExecutorResolver
+        return DefaultLoopResolver
 
     def resolve(
         self, host: str, port: int, family: socket.AddressFamily = socket.AF_UNSPEC
@@ -380,13 +400,17 @@ def _resolve_addr(
     results = []
     for fam, socktype, proto, canonname, address in addrinfo:
         results.append((fam, address))
-    return results
+    return results  # type: ignore
 
 
 class DefaultExecutorResolver(Resolver):
     """Resolver implementation using `.IOLoop.run_in_executor`.
 
     .. versionadded:: 5.0
+
+    .. deprecated:: 6.2
+
+       Use `DefaultLoopResolver` instead.
     """
 
     async def resolve(
@@ -396,6 +420,25 @@ class DefaultExecutorResolver(Resolver):
             None, _resolve_addr, host, port, family
         )
         return result
+
+
+class DefaultLoopResolver(Resolver):
+    """Resolver implementation using `asyncio.loop.getaddrinfo`."""
+
+    async def resolve(
+        self, host: str, port: int, family: socket.AddressFamily = socket.AF_UNSPEC
+    ) -> List[Tuple[int, Any]]:
+        # On Solaris, getaddrinfo fails if the given port is not found
+        # in /etc/services and no socket type is given, so we must pass
+        # one here.  The socket type used here doesn't seem to actually
+        # matter (we discard the one we get back in the results),
+        # so the addresses we return should still be usable with SOCK_DGRAM.
+        return [
+            (fam, address)
+            for fam, _, _, _, address in await asyncio.get_running_loop().getaddrinfo(
+                host, port, family=family, type=socket.SOCK_STREAM
+            )
+        ]
 
 
 class ExecutorResolver(Resolver):
@@ -412,14 +455,15 @@ class ExecutorResolver(Resolver):
        The ``io_loop`` argument (deprecated since version 4.1) has been removed.
 
     .. deprecated:: 5.0
-       The default `Resolver` now uses `.IOLoop.run_in_executor`; use that instead
-       of this class.
+       The default `Resolver` now uses `asyncio.loop.getaddrinfo`;
+       use that instead of this class.
     """
 
     def initialize(
-        self, executor: concurrent.futures.Executor = None, close_executor: bool = True
+        self,
+        executor: Optional[concurrent.futures.Executor] = None,
+        close_executor: bool = True,
     ) -> None:
-        self.io_loop = IOLoop.current()
         if executor is not None:
             self.executor = executor
             self.close_executor = close_executor
@@ -451,15 +495,11 @@ class BlockingResolver(ExecutorResolver):
     """
 
     def initialize(self) -> None:  # type: ignore
-        super(BlockingResolver, self).initialize()
+        super().initialize()
 
 
 class ThreadedResolver(ExecutorResolver):
     """Multithreaded non-blocking `Resolver` implementation.
-
-    Requires the `concurrent.futures` package to be installed
-    (available in the standard library since Python 3.2,
-    installable with ``pip install futures`` in older versions).
 
     The thread pool size can be configured with::
 
@@ -480,9 +520,7 @@ class ThreadedResolver(ExecutorResolver):
 
     def initialize(self, num_threads: int = 10) -> None:  # type: ignore
         threadpool = ThreadedResolver._create_threadpool(num_threads)
-        super(ThreadedResolver, self).initialize(
-            executor=threadpool, close_executor=False
-        )
+        super().initialize(executor=threadpool, close_executor=False)
 
     @classmethod
     def _create_threadpool(
@@ -550,30 +588,44 @@ _SSL_CONTEXT_KEYWORDS = frozenset(
 
 
 def ssl_options_to_context(
-    ssl_options: Union[Dict[str, Any], ssl.SSLContext]
+    ssl_options: Union[Dict[str, Any], ssl.SSLContext],
+    server_side: Optional[bool] = None,
 ) -> ssl.SSLContext:
     """Try to convert an ``ssl_options`` dictionary to an
     `~ssl.SSLContext` object.
 
-    The ``ssl_options`` dictionary contains keywords to be passed to
-    `ssl.wrap_socket`.  In Python 2.7.9+, `ssl.SSLContext` objects can
-    be used instead.  This function converts the dict form to its
-    `~ssl.SSLContext` equivalent, and may be used when a component which
-    accepts both forms needs to upgrade to the `~ssl.SSLContext` version
-    to use features like SNI or NPN.
+    The ``ssl_options`` argument may be either an `ssl.SSLContext` object or a dictionary containing
+    keywords to be passed to ``ssl.SSLContext.wrap_socket``.  This function converts the dict form
+    to its `~ssl.SSLContext` equivalent, and may be used when a component which accepts both forms
+    needs to upgrade to the `~ssl.SSLContext` version to use features like SNI or ALPN.
+
+    .. versionchanged:: 6.2
+
+       Added server_side argument. Omitting this argument will result in a DeprecationWarning on
+       Python 3.10.
+
     """
     if isinstance(ssl_options, ssl.SSLContext):
         return ssl_options
     assert isinstance(ssl_options, dict)
     assert all(k in _SSL_CONTEXT_KEYWORDS for k in ssl_options), ssl_options
-    # Can't use create_default_context since this interface doesn't
-    # tell us client vs server.
-    context = ssl.SSLContext(ssl_options.get("ssl_version", ssl.PROTOCOL_SSLv23))
+    # TODO: Now that we have the server_side argument, can we switch to
+    # create_default_context or would that change behavior?
+    default_version = ssl.PROTOCOL_TLS
+    if server_side:
+        default_version = ssl.PROTOCOL_TLS_SERVER
+    elif server_side is not None:
+        default_version = ssl.PROTOCOL_TLS_CLIENT
+    context = ssl.SSLContext(ssl_options.get("ssl_version", default_version))
     if "certfile" in ssl_options:
         context.load_cert_chain(
             ssl_options["certfile"], ssl_options.get("keyfile", None)
         )
     if "cert_reqs" in ssl_options:
+        if ssl_options["cert_reqs"] == ssl.CERT_NONE:
+            # This may have been set automatically by PROTOCOL_TLS_CLIENT but is
+            # incompatible with CERT_NONE so we must manually clear it.
+            context.check_hostname = False
         context.verify_mode = ssl_options["cert_reqs"]
     if "ca_certs" in ssl_options:
         context.load_verify_locations(ssl_options["ca_certs"])
@@ -591,24 +643,28 @@ def ssl_options_to_context(
 def ssl_wrap_socket(
     socket: socket.socket,
     ssl_options: Union[Dict[str, Any], ssl.SSLContext],
-    server_hostname: str = None,
-    **kwargs: Any
+    server_hostname: Optional[str] = None,
+    server_side: Optional[bool] = None,
+    **kwargs: Any,
 ) -> ssl.SSLSocket:
     """Returns an ``ssl.SSLSocket`` wrapping the given socket.
 
     ``ssl_options`` may be either an `ssl.SSLContext` object or a
     dictionary (as accepted by `ssl_options_to_context`).  Additional
-    keyword arguments are passed to ``wrap_socket`` (either the
-    `~ssl.SSLContext` method or the `ssl` module function as
-    appropriate).
+    keyword arguments are passed to `ssl.SSLContext.wrap_socket`.
+
+    .. versionchanged:: 6.2
+
+       Added server_side argument. Omitting this argument will
+       result in a DeprecationWarning on Python 3.10.
     """
-    context = ssl_options_to_context(ssl_options)
-    if ssl.HAS_SNI:
-        # In python 3.4, wrap_socket only accepts the server_hostname
-        # argument if HAS_SNI is true.
-        # TODO: add a unittest (python added server-side SNI support in 3.4)
-        # In the meantime it can be manually tested with
-        # python3 -m tornado.httpclient https://sni.velox.ch
-        return context.wrap_socket(socket, server_hostname=server_hostname, **kwargs)
-    else:
-        return context.wrap_socket(socket, **kwargs)
+    context = ssl_options_to_context(ssl_options, server_side=server_side)
+    if server_side is None:
+        server_side = False
+    assert ssl.HAS_SNI
+    # TODO: add a unittest for hostname validation (python added server-side SNI support in 3.4)
+    # In the meantime it can be manually tested with
+    # python3 -m tornado.httpclient https://sni.velox.ch
+    return context.wrap_socket(
+        socket, server_hostname=server_hostname, server_side=server_side, **kwargs
+    )

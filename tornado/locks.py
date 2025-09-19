@@ -13,7 +13,6 @@
 # under the License.
 
 import collections
-from concurrent.futures import CancelledError
 import datetime
 import types
 
@@ -29,7 +28,7 @@ if typing.TYPE_CHECKING:
 __all__ = ["Condition", "Event", "Semaphore", "BoundedSemaphore", "Lock"]
 
 
-class _TimeoutGarbageCollector(object):
+class _TimeoutGarbageCollector:
     """Base class for objects that periodically clean up timed-out waiters.
 
     Avoids memory leak in a common pattern like:
@@ -61,8 +60,8 @@ class Condition(_TimeoutGarbageCollector):
 
     .. testcode::
 
+        import asyncio
         from tornado import gen
-        from tornado.ioloop import IOLoop
         from tornado.locks import Condition
 
         condition = Condition()
@@ -81,7 +80,7 @@ class Condition(_TimeoutGarbageCollector):
             # Wait for waiter() and notifier() in parallel
             await gen.multi([waiter(), notifier()])
 
-        IOLoop.current().run_sync(runner)
+        asyncio.run(runner())
 
     .. testoutput::
 
@@ -111,17 +110,15 @@ class Condition(_TimeoutGarbageCollector):
        next iteration of the `.IOLoop`.
     """
 
-    def __init__(self) -> None:
-        super(Condition, self).__init__()
-        self.io_loop = ioloop.IOLoop.current()
-
     def __repr__(self) -> str:
-        result = "<%s" % (self.__class__.__name__,)
+        result = f"<{self.__class__.__name__}"
         if self._waiters:
             result += " waiters[%s]" % len(self._waiters)
         return result + ">"
 
-    def wait(self, timeout: Union[float, datetime.timedelta] = None) -> Awaitable[bool]:
+    def wait(
+        self, timeout: Optional[Union[float, datetime.timedelta]] = None
+    ) -> Awaitable[bool]:
         """Wait for `.notify`.
 
         Returns a `.Future` that resolves ``True`` if the condition is notified,
@@ -158,7 +155,7 @@ class Condition(_TimeoutGarbageCollector):
         self.notify(len(self._waiters))
 
 
-class Event(object):
+class Event:
     """An event blocks coroutines until its internal flag is set to True.
 
     Similar to `threading.Event`.
@@ -168,8 +165,8 @@ class Event(object):
 
     .. testcode::
 
+        import asyncio
         from tornado import gen
-        from tornado.ioloop import IOLoop
         from tornado.locks import Event
 
         event = Event()
@@ -188,7 +185,7 @@ class Event(object):
         async def runner():
             await gen.multi([waiter(), setter()])
 
-        IOLoop.current().run_sync(runner)
+        asyncio.run(runner())
 
     .. testoutput::
 
@@ -203,7 +200,7 @@ class Event(object):
         self._waiters = set()  # type: Set[Future[None]]
 
     def __repr__(self) -> str:
-        return "<%s %s>" % (
+        return "<{} {}>".format(
             self.__class__.__name__,
             "set" if self.is_set() else "clear",
         )
@@ -231,7 +228,9 @@ class Event(object):
         """
         self._value = False
 
-    def wait(self, timeout: Union[float, datetime.timedelta] = None) -> Awaitable[None]:
+    def wait(
+        self, timeout: Optional[Union[float, datetime.timedelta]] = None
+    ) -> Awaitable[None]:
         """Block until the internal flag is true.
 
         Returns an awaitable, which raises `tornado.util.TimeoutError` after a
@@ -246,9 +245,7 @@ class Event(object):
         if timeout is None:
             return fut
         else:
-            timeout_fut = gen.with_timeout(
-                timeout, fut, quiet_exceptions=(CancelledError,)
-            )
+            timeout_fut = gen.with_timeout(timeout, fut)
             # This is a slightly clumsy workaround for the fact that
             # gen.with_timeout doesn't cancel its futures. Cancelling
             # fut will remove it from the waiters list.
@@ -258,13 +255,13 @@ class Event(object):
             return timeout_fut
 
 
-class _ReleasingContextManager(object):
+class _ReleasingContextManager:
     """Releases a Lock or Semaphore at the end of a "with" statement.
 
-        with (yield semaphore.acquire()):
-            pass
+    with (yield semaphore.acquire()):
+        pass
 
-        # Now semaphore.release() has been called.
+    # Now semaphore.release() has been called.
     """
 
     def __init__(self, obj: Any) -> None:
@@ -301,8 +298,7 @@ class Semaphore(_TimeoutGarbageCollector):
        from tornado.ioloop import IOLoop
        from tornado.concurrent import Future
 
-       # Ensure reliable doctest output: resolve Futures one at a time.
-       futures_q = deque([Future() for _ in range(3)])
+       inited = False
 
        async def simulator(futures):
            for f in futures:
@@ -311,15 +307,21 @@ class Semaphore(_TimeoutGarbageCollector):
                await gen.sleep(0)
                f.set_result(None)
 
-       IOLoop.current().add_callback(simulator, list(futures_q))
-
        def use_some_resource():
+           global inited
+           global futures_q
+           if not inited:
+               inited = True
+               # Ensure reliable doctest output: resolve Futures one at a time.
+               futures_q = deque([Future() for _ in range(3)])
+               IOLoop.current().add_callback(simulator, list(futures_q))
+
            return futures_q.popleft()
 
     .. testcode:: semaphore
 
+        import asyncio
         from tornado import gen
-        from tornado.ioloop import IOLoop
         from tornado.locks import Semaphore
 
         sem = Semaphore(2)
@@ -337,7 +339,7 @@ class Semaphore(_TimeoutGarbageCollector):
             # Join all workers.
             await gen.multi([worker(i) for i in range(3)])
 
-        IOLoop.current().run_sync(runner)
+        asyncio.run(runner())
 
     .. testoutput:: semaphore
 
@@ -379,20 +381,18 @@ class Semaphore(_TimeoutGarbageCollector):
     """
 
     def __init__(self, value: int = 1) -> None:
-        super(Semaphore, self).__init__()
+        super().__init__()
         if value < 0:
             raise ValueError("semaphore initial value must be >= 0")
 
         self._value = value
 
     def __repr__(self) -> str:
-        res = super(Semaphore, self).__repr__()
-        extra = (
-            "locked" if self._value == 0 else "unlocked,value:{0}".format(self._value)
-        )
+        res = super().__repr__()
+        extra = "locked" if self._value == 0 else f"unlocked,value:{self._value}"
         if self._waiters:
-            extra = "{0},waiters:{1}".format(extra, len(self._waiters))
-        return "<{0} [{1}]>".format(res[1:-1], extra)
+            extra = f"{extra},waiters:{len(self._waiters)}"
+        return f"<{res[1:-1]} [{extra}]>"
 
     def release(self) -> None:
         """Increment the counter and wake one waiter."""
@@ -412,7 +412,7 @@ class Semaphore(_TimeoutGarbageCollector):
                 break
 
     def acquire(
-        self, timeout: Union[float, datetime.timedelta] = None
+        self, timeout: Optional[Union[float, datetime.timedelta]] = None
     ) -> Awaitable[_ReleasingContextManager]:
         """Decrement the counter. Returns an awaitable.
 
@@ -472,17 +472,17 @@ class BoundedSemaphore(Semaphore):
     """
 
     def __init__(self, value: int = 1) -> None:
-        super(BoundedSemaphore, self).__init__(value=value)
+        super().__init__(value=value)
         self._initial_value = value
 
     def release(self) -> None:
         """Increment the counter and wake one waiter."""
         if self._value >= self._initial_value:
             raise ValueError("Semaphore released too many times")
-        super(BoundedSemaphore, self).release()
+        super().release()
 
 
-class Lock(object):
+class Lock:
     """A lock for coroutines.
 
     A Lock begins unlocked, and `acquire` locks it immediately. While it is
@@ -523,10 +523,10 @@ class Lock(object):
         self._block = BoundedSemaphore(value=1)
 
     def __repr__(self) -> str:
-        return "<%s _block=%s>" % (self.__class__.__name__, self._block)
+        return f"<{self.__class__.__name__} _block={self._block}>"
 
     def acquire(
-        self, timeout: Union[float, datetime.timedelta] = None
+        self, timeout: Optional[Union[float, datetime.timedelta]] = None
     ) -> Awaitable[_ReleasingContextManager]:
         """Attempt to lock. Returns an awaitable.
 

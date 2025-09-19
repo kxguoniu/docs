@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-#
 # Copyright 2009 Facebook
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -43,6 +41,7 @@ import codecs
 import csv
 import datetime
 import gettext
+import glob
 import os
 import re
 
@@ -51,7 +50,7 @@ from tornado.log import gen_log
 
 from tornado._locale_data import LOCALE_NAMES
 
-from typing import Iterable, Any, Union, Dict
+from typing import Iterable, Any, Union, Dict, Optional
 
 _default_locale = "en_US"
 _translations = {}  # type: Dict[str, Any]
@@ -88,7 +87,7 @@ def set_default_locale(code: str) -> None:
     _supported_locales = frozenset(list(_translations.keys()) + [_default_locale])
 
 
-def load_translations(directory: str, encoding: str = None) -> None:
+def load_translations(directory: str, encoding: Optional[str] = None) -> None:
     """Loads translations from CSV files in a directory.
 
     Translations are strings with optional Python-style named placeholders
@@ -196,19 +195,16 @@ def load_gettext_translations(directory: str, domain: str) -> None:
 
         msgfmt mydomain.po -o {directory}/pt_BR/LC_MESSAGES/mydomain.mo
     """
-    import gettext
-
     global _translations
     global _supported_locales
     global _use_gettext
     _translations = {}
-    for lang in os.listdir(directory):
-        if lang.startswith("."):
-            continue  # skip .svn, etc
-        if os.path.isfile(os.path.join(directory, lang)):
-            continue
+
+    for filename in glob.glob(
+        os.path.join(directory, "*", "LC_MESSAGES", domain + ".mo")
+    ):
+        lang = os.path.basename(os.path.dirname(os.path.dirname(filename)))
         try:
-            os.stat(os.path.join(directory, lang, "LC_MESSAGES", domain + ".mo"))
             _translations[lang] = gettext.translation(
                 domain, directory, languages=[lang]
             )
@@ -225,7 +221,7 @@ def get_supported_locales() -> Iterable[str]:
     return _supported_locales
 
 
-class Locale(object):
+class Locale:
     """Object representing a locale.
 
     After calling one of `load_translations` or `load_gettext_translations`,
@@ -272,7 +268,7 @@ class Locale(object):
 
     def __init__(self, code: str) -> None:
         self.code = code
-        self.name = LOCALE_NAMES.get(code, {}).get("name", u"Unknown")
+        self.name = LOCALE_NAMES.get(code, {}).get("name", "Unknown")
         self.rtl = False
         for prefix in ["fa", "ar", "he"]:
             if self.code.startswith(prefix):
@@ -306,7 +302,10 @@ class Locale(object):
         ]
 
     def translate(
-        self, message: str, plural_message: str = None, count: int = None
+        self,
+        message: str,
+        plural_message: Optional[str] = None,
+        count: Optional[int] = None,
     ) -> str:
         """Returns the translation for the given message for this locale.
 
@@ -318,7 +317,11 @@ class Locale(object):
         raise NotImplementedError()
 
     def pgettext(
-        self, context: str, message: str, plural_message: str = None, count: int = None
+        self,
+        context: str,
+        message: str,
+        plural_message: Optional[str] = None,
+        count: Optional[int] = None,
     ) -> str:
         raise NotImplementedError()
 
@@ -330,7 +333,7 @@ class Locale(object):
         shorter: bool = False,
         full_format: bool = False,
     ) -> str:
-        """Formats the given date (which should be GMT).
+        """Formats the given date.
 
         By default, we return a relative time (e.g., "2 minutes ago"). You
         can return an absolute date string with ``relative=False``.
@@ -340,10 +343,16 @@ class Locale(object):
 
         This method is primarily intended for dates in the past.
         For dates in the future, we fall back to full format.
+
+        .. versionchanged:: 6.4
+           Aware `datetime.datetime` objects are now supported (naive
+           datetimes are still assumed to be UTC).
         """
         if isinstance(date, (int, float)):
-            date = datetime.datetime.utcfromtimestamp(date)
-        now = datetime.datetime.utcnow()
+            date = datetime.datetime.fromtimestamp(date, datetime.timezone.utc)
+        if date.tzinfo is None:
+            date = date.replace(tzinfo=datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.timezone.utc)
         if date > now:
             if relative and (date - now).seconds < 60:
                 # Due to click skew, things are some things slightly
@@ -403,7 +412,7 @@ class Locale(object):
             str_time = "%d:%02d" % (local_date.hour, local_date.minute)
         elif self.code == "zh_CN":
             str_time = "%s%d:%02d" % (
-                (u"\u4e0a\u5348", u"\u4e0b\u5348")[local_date.hour >= 12],
+                ("\u4e0a\u5348", "\u4e0b\u5348")[local_date.hour >= 12],
                 local_date.hour % 12 or 12,
                 local_date.minute,
             )
@@ -455,7 +464,7 @@ class Locale(object):
             return ""
         if len(parts) == 1:
             return parts[0]
-        comma = u" \u0648 " if self.code.startswith("fa") else u", "
+        comma = " \u0648 " if self.code.startswith("fa") else ", "
         return _("%(commas)s and %(last)s") % {
             "commas": comma.join(parts[:-1]),
             "last": parts[len(parts) - 1],
@@ -478,10 +487,13 @@ class CSVLocale(Locale):
 
     def __init__(self, code: str, translations: Dict[str, Dict[str, str]]) -> None:
         self.translations = translations
-        super(CSVLocale, self).__init__(code)
+        super().__init__(code)
 
     def translate(
-        self, message: str, plural_message: str = None, count: int = None
+        self,
+        message: str,
+        plural_message: Optional[str] = None,
+        count: Optional[int] = None,
     ) -> str:
         if plural_message is not None:
             assert count is not None
@@ -495,7 +507,11 @@ class CSVLocale(Locale):
         return message_dict.get(message, message)
 
     def pgettext(
-        self, context: str, message: str, plural_message: str = None, count: int = None
+        self,
+        context: str,
+        message: str,
+        plural_message: Optional[str] = None,
+        count: Optional[int] = None,
     ) -> str:
         if self.translations:
             gen_log.warning("pgettext is not supported by CSVLocale")
@@ -510,10 +526,13 @@ class GettextLocale(Locale):
         self.gettext = translations.gettext
         # self.gettext must exist before __init__ is called, since it
         # calls into self.translate
-        super(GettextLocale, self).__init__(code)
+        super().__init__(code)
 
     def translate(
-        self, message: str, plural_message: str = None, count: int = None
+        self,
+        message: str,
+        plural_message: Optional[str] = None,
+        count: Optional[int] = None,
     ) -> str:
         if plural_message is not None:
             assert count is not None
@@ -522,7 +541,11 @@ class GettextLocale(Locale):
             return self.gettext(message)
 
     def pgettext(
-        self, context: str, message: str, plural_message: str = None, count: int = None
+        self,
+        context: str,
+        message: str,
+        plural_message: Optional[str] = None,
+        count: Optional[int] = None,
     ) -> str:
         """Allows to set context for translation, accepts plural forms.
 
@@ -546,8 +569,8 @@ class GettextLocale(Locale):
         if plural_message is not None:
             assert count is not None
             msgs_with_ctxt = (
-                "%s%s%s" % (context, CONTEXT_SEPARATOR, message),
-                "%s%s%s" % (context, CONTEXT_SEPARATOR, plural_message),
+                f"{context}{CONTEXT_SEPARATOR}{message}",
+                f"{context}{CONTEXT_SEPARATOR}{plural_message}",
                 count,
             )
             result = self.ngettext(*msgs_with_ctxt)
@@ -556,7 +579,7 @@ class GettextLocale(Locale):
                 result = self.ngettext(message, plural_message, count)
             return result
         else:
-            msg_with_ctxt = "%s%s%s" % (context, CONTEXT_SEPARATOR, message)
+            msg_with_ctxt = f"{context}{CONTEXT_SEPARATOR}{message}"
             result = self.gettext(msg_with_ctxt)
             if CONTEXT_SEPARATOR in result:
                 # Translation not found

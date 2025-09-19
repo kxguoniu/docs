@@ -1,122 +1,126 @@
-import functools
 import re
+import warnings
 from dataclasses import is_dataclass
-from enum import Enum
-from typing import Any, Dict, Optional, Set, Type, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    MutableMapping,
+    Optional,
+    Set,
+    Type,
+    Union,
+    cast,
+)
+from weakref import WeakKeyDictionary
 
 import fastapi
-from fastapi.logger import logger
-from fastapi.openapi.constants import REF_PREFIX
-from pydantic import BaseConfig, BaseModel, create_model
-from pydantic.class_validators import Validator
-from pydantic.schema import model_process_schema
-from pydantic.utils import lenient_issubclass
+from fastapi._compat import (
+    PYDANTIC_V2,
+    BaseConfig,
+    ModelField,
+    PydanticSchemaGenerationError,
+    Undefined,
+    UndefinedType,
+    Validator,
+    lenient_issubclass,
+)
+from fastapi.datastructures import DefaultPlaceholder, DefaultType
+from pydantic import BaseModel, create_model
+from pydantic.fields import FieldInfo
+from typing_extensions import Literal
 
-try:
-    from pydantic.fields import FieldInfo, ModelField, UndefinedType
+if TYPE_CHECKING:  # pragma: nocover
+    from .routing import APIRoute
 
-    PYDANTIC_1 = True
-except ImportError:  # pragma: nocover
-    # TODO: remove when removing support for Pydantic < 1.0.0
-    from pydantic import Schema as FieldInfo  # type: ignore
-    from pydantic.fields import Field as ModelField  # type: ignore
-
-    class UndefinedType:  # type: ignore
-        def __repr__(self) -> str:
-            return "PydanticUndefined"
-
-    logger.warning(
-        "Pydantic versions < 1.0.0 are deprecated in FastAPI and support will be "
-        "removed soon."
-    )
-    PYDANTIC_1 = False
+# Cache for `create_cloned_field`
+_CLONED_TYPES_CACHE: MutableMapping[Type[BaseModel], Type[BaseModel]] = (
+    WeakKeyDictionary()
+)
 
 
-# TODO: remove when removing support for Pydantic < 1.0.0
-def get_field_info(field: ModelField) -> FieldInfo:
-    if PYDANTIC_1:
-        return field.field_info  # type: ignore
-    else:
-        return field.schema  # type: ignore  # pragma: nocover
-
-
-# TODO: remove when removing support for Pydantic < 1.0.0
-def warning_response_model_skip_defaults_deprecated() -> None:
-    logger.warning(  # pragma: nocover
-        "response_model_skip_defaults has been deprecated in favor of "
-        "response_model_exclude_unset to keep in line with Pydantic v1, support for "
-        "it will be removed soon."
-    )
-
-
-def get_model_definitions(
-    *,
-    flat_models: Set[Union[Type[BaseModel], Type[Enum]]],
-    model_name_map: Dict[Union[Type[BaseModel], Type[Enum]], str],
-) -> Dict[str, Any]:
-    definitions: Dict[str, Dict] = {}
-    for model in flat_models:
-        # ignore mypy error until enum schemas are released
-        m_schema, m_definitions, m_nested_models = model_process_schema(
-            model, model_name_map=model_name_map, ref_prefix=REF_PREFIX  # type: ignore
-        )
-        definitions.update(m_definitions)
-        model_name = model_name_map[model]
-        definitions[model_name] = m_schema
-    return definitions
+def is_body_allowed_for_status_code(status_code: Union[int, str, None]) -> bool:
+    if status_code is None:
+        return True
+    # Ref: https://github.com/OAI/OpenAPI-Specification/blob/main/versions/3.1.0.md#patterned-fields-1
+    if status_code in {
+        "default",
+        "1XX",
+        "2XX",
+        "3XX",
+        "4XX",
+        "5XX",
+    }:
+        return True
+    current_status_code = int(status_code)
+    return not (current_status_code < 200 or current_status_code in {204, 205, 304})
 
 
 def get_path_param_names(path: str) -> Set[str]:
     return set(re.findall("{(.*?)}", path))
 
 
-def create_response_field(
+def create_model_field(
     name: str,
-    type_: Type[Any],
+    type_: Any,
     class_validators: Optional[Dict[str, Validator]] = None,
-    default: Optional[Any] = None,
-    required: Union[bool, UndefinedType] = False,
+    default: Optional[Any] = Undefined,
+    required: Union[bool, UndefinedType] = Undefined,
     model_config: Type[BaseConfig] = BaseConfig,
     field_info: Optional[FieldInfo] = None,
     alias: Optional[str] = None,
+    mode: Literal["validation", "serialization"] = "validation",
 ) -> ModelField:
-    """
-    Create a new response field. Raises if type_ is invalid.
-    """
     class_validators = class_validators or {}
-    field_info = field_info or FieldInfo(None)
-
-    response_field = functools.partial(
-        ModelField,
-        name=name,
-        type_=type_,
-        class_validators=class_validators,
-        default=default,
-        required=required,
-        model_config=model_config,
-        alias=alias,
-    )
-
-    try:
-        if PYDANTIC_1:
-            return response_field(field_info=field_info)
-        else:  # pragma: nocover
-            return response_field(schema=field_info)
-    except RuntimeError:
-        raise fastapi.exceptions.FastAPIError(
-            f"Invalid args for response field! Hint: check that {type_} is a valid pydantic field type"
+    if PYDANTIC_V2:
+        field_info = field_info or FieldInfo(
+            annotation=type_, default=default, alias=alias
         )
+    else:
+        field_info = field_info or FieldInfo()
+    kwargs = {"name": name, "field_info": field_info}
+    if PYDANTIC_V2:
+        kwargs.update({"mode": mode})
+    else:
+        kwargs.update(
+            {
+                "type_": type_,
+                "class_validators": class_validators,
+                "default": default,
+                "required": required,
+                "model_config": model_config,
+                "alias": alias,
+            }
+        )
+    try:
+        return ModelField(**kwargs)  # type: ignore[arg-type]
+    except (RuntimeError, PydanticSchemaGenerationError):
+        raise fastapi.exceptions.FastAPIError(
+            "Invalid args for response field! Hint: "
+            f"check that {type_} is a valid Pydantic field type. "
+            "If you are using a return type annotation that is not a valid Pydantic "
+            "field (e.g. Union[Response, dict, None]) you can disable generating the "
+            "response model from the type annotation with the path operation decorator "
+            "parameter response_model=None. Read more: "
+            "https://fastapi.tiangolo.com/tutorial/response-model/"
+        ) from None
 
 
 def create_cloned_field(
-    field: ModelField, *, cloned_types: Dict[Type[BaseModel], Type[BaseModel]] = None,
+    field: ModelField,
+    *,
+    cloned_types: Optional[MutableMapping[Type[BaseModel], Type[BaseModel]]] = None,
 ) -> ModelField:
-    # _cloned_types has already cloned types, to support recursive models
+    if PYDANTIC_V2:
+        return field
+    # cloned_types caches already cloned types to support recursive models and improve
+    # performance by avoiding unnecessary cloning
     if cloned_types is None:
-        cloned_types = dict()
+        cloned_types = _CLONED_TYPES_CACHE
+
     original_type = field.type_
     if is_dataclass(original_type) and hasattr(original_type, "__pydantic_model__"):
-        original_type = original_type.__pydantic_model__  # type: ignore
+        original_type = original_type.__pydantic_model__
     use_type = original_type
     if lenient_issubclass(original_type, BaseModel):
         original_type = cast(Type[BaseModel], original_type)
@@ -128,59 +132,89 @@ def create_cloned_field(
                 use_type.__fields__[f.name] = create_cloned_field(
                     f, cloned_types=cloned_types
                 )
-    new_field = create_response_field(name=field.name, type_=use_type)
-    new_field.has_alias = field.has_alias
-    new_field.alias = field.alias
-    new_field.class_validators = field.class_validators
-    new_field.default = field.default
-    new_field.required = field.required
-    new_field.model_config = field.model_config
-    if PYDANTIC_1:
-        new_field.field_info = field.field_info
-    else:  # pragma: nocover
-        new_field.schema = field.schema  # type: ignore
-    new_field.allow_none = field.allow_none
-    new_field.validate_always = field.validate_always
-    if field.sub_fields:
-        new_field.sub_fields = [
+    new_field = create_model_field(name=field.name, type_=use_type)
+    new_field.has_alias = field.has_alias  # type: ignore[attr-defined]
+    new_field.alias = field.alias  # type: ignore[misc]
+    new_field.class_validators = field.class_validators  # type: ignore[attr-defined]
+    new_field.default = field.default  # type: ignore[misc]
+    new_field.required = field.required  # type: ignore[misc]
+    new_field.model_config = field.model_config  # type: ignore[attr-defined]
+    new_field.field_info = field.field_info
+    new_field.allow_none = field.allow_none  # type: ignore[attr-defined]
+    new_field.validate_always = field.validate_always  # type: ignore[attr-defined]
+    if field.sub_fields:  # type: ignore[attr-defined]
+        new_field.sub_fields = [  # type: ignore[attr-defined]
             create_cloned_field(sub_field, cloned_types=cloned_types)
-            for sub_field in field.sub_fields
+            for sub_field in field.sub_fields  # type: ignore[attr-defined]
         ]
-    if field.key_field:
-        new_field.key_field = create_cloned_field(
-            field.key_field, cloned_types=cloned_types
+    if field.key_field:  # type: ignore[attr-defined]
+        new_field.key_field = create_cloned_field(  # type: ignore[attr-defined]
+            field.key_field,  # type: ignore[attr-defined]
+            cloned_types=cloned_types,
         )
-    new_field.validators = field.validators
-    if PYDANTIC_1:
-        new_field.pre_validators = field.pre_validators
-        new_field.post_validators = field.post_validators
-    else:  # pragma: nocover
-        new_field.whole_pre_validators = field.whole_pre_validators  # type: ignore
-        new_field.whole_post_validators = field.whole_post_validators  # type: ignore
-    new_field.parse_json = field.parse_json
-    new_field.shape = field.shape
-    try:
-        new_field.populate_validators()
-    except AttributeError:  # pragma: nocover
-        # TODO: remove when removing support for Pydantic < 1.0.0
-        new_field._populate_validators()  # type: ignore
+    new_field.validators = field.validators  # type: ignore[attr-defined]
+    new_field.pre_validators = field.pre_validators  # type: ignore[attr-defined]
+    new_field.post_validators = field.post_validators  # type: ignore[attr-defined]
+    new_field.parse_json = field.parse_json  # type: ignore[attr-defined]
+    new_field.shape = field.shape  # type: ignore[attr-defined]
+    new_field.populate_validators()  # type: ignore[attr-defined]
     return new_field
 
 
-def generate_operation_id_for_path(*, name: str, path: str, method: str) -> str:
-    operation_id = name + path
-    operation_id = re.sub("[^0-9a-zA-Z_]", "_", operation_id)
-    operation_id = operation_id + "_" + method.lower()
+def generate_operation_id_for_path(
+    *, name: str, path: str, method: str
+) -> str:  # pragma: nocover
+    warnings.warn(
+        "fastapi.utils.generate_operation_id_for_path() was deprecated, "
+        "it is not used internally, and will be removed soon",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    operation_id = f"{name}{path}"
+    operation_id = re.sub(r"\W", "_", operation_id)
+    operation_id = f"{operation_id}_{method.lower()}"
     return operation_id
 
 
-def deep_dict_update(main_dict: dict, update_dict: dict) -> None:
-    for key in update_dict:
+def generate_unique_id(route: "APIRoute") -> str:
+    operation_id = f"{route.name}{route.path_format}"
+    operation_id = re.sub(r"\W", "_", operation_id)
+    assert route.methods
+    operation_id = f"{operation_id}_{list(route.methods)[0].lower()}"
+    return operation_id
+
+
+def deep_dict_update(main_dict: Dict[Any, Any], update_dict: Dict[Any, Any]) -> None:
+    for key, value in update_dict.items():
         if (
             key in main_dict
             and isinstance(main_dict[key], dict)
-            and isinstance(update_dict[key], dict)
+            and isinstance(value, dict)
         ):
-            deep_dict_update(main_dict[key], update_dict[key])
+            deep_dict_update(main_dict[key], value)
+        elif (
+            key in main_dict
+            and isinstance(main_dict[key], list)
+            and isinstance(update_dict[key], list)
+        ):
+            main_dict[key] = main_dict[key] + update_dict[key]
         else:
-            main_dict[key] = update_dict[key]
+            main_dict[key] = value
+
+
+def get_value_or_default(
+    first_item: Union[DefaultPlaceholder, DefaultType],
+    *extra_items: Union[DefaultPlaceholder, DefaultType],
+) -> Union[DefaultPlaceholder, DefaultType]:
+    """
+    Pass items or `DefaultPlaceholder`s by descending priority.
+
+    The first one to _not_ be a `DefaultPlaceholder` will be returned.
+
+    Otherwise, the first item (a `DefaultPlaceholder`) will be returned.
+    """
+    items = (first_item,) + extra_items
+    for item in items:
+        if not isinstance(item, DefaultPlaceholder):
+            return item
+    return first_item
